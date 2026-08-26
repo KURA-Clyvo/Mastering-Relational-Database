@@ -24,6 +24,7 @@
 -- ============================================================================
 
 SET SERVEROUTPUT ON SIZE UNLIMITED;
+set verify off
 
 -- ============================================================================
 -- SEÇÃO 1 — DDL CANÔNICO (kura_schema_v5.sql — IMUTÁVEL)
@@ -86,58 +87,58 @@ SET SERVEROUTPUT ON SIZE UNLIMITED;
 --    (ordem reversa de dependências)
 -- ============================================================================
 
--- DROP TABLE IDEMPOTENCY_KEY              CASCADE CONSTRAINTS;
--- DROP TABLE CONSENTIMENTO                CASCADE CONSTRAINTS;
--- DROP TABLE CONTA_TUTOR                  CASCADE CONSTRAINTS;
--- DROP TABLE AGENDAMENTO                  CASCADE CONSTRAINTS;
--- DROP TABLE TRIAGEM_LUNA                 CASCADE CONSTRAINTS;
--- DROP TABLE ALERTA_TEMPERATURA           CASCADE CONSTRAINTS;
--- DROP TABLE LEITURA_TEMPERATURA          CASCADE CONSTRAINTS;
--- DROP TABLE DISPOSITIVO_IOT              CASCADE CONSTRAINTS;
--- DROP TABLE NOTIFICACAO                  CASCADE CONSTRAINTS;
--- DROP TABLE DOCUMENTO                    CASCADE CONSTRAINTS;
--- DROP TABLE EXAME                        CASCADE CONSTRAINTS;
--- DROP TABLE PRESCRICAO                   CASCADE CONSTRAINTS;
--- DROP TABLE CONSULTA                     CASCADE CONSTRAINTS;
--- DROP TABLE VACINA                       CASCADE CONSTRAINTS;
--- DROP TABLE EVENTO_CLINICO               CASCADE CONSTRAINTS;
--- DROP TABLE TIPO_EVENTO                  CASCADE CONSTRAINTS;
--- DROP TABLE INVITE_TUTOR                 CASCADE CONSTRAINTS;
--- DROP TABLE TUTOR_PET                    CASCADE CONSTRAINTS;
--- DROP TABLE PET                          CASCADE CONSTRAINTS;
--- DROP TABLE RACA                         CASCADE CONSTRAINTS;
--- DROP TABLE ESPECIE                      CASCADE CONSTRAINTS;
--- DROP TABLE TUTOR                        CASCADE CONSTRAINTS;
--- DROP TABLE VETERINARIO                  CASCADE CONSTRAINTS;
--- DROP TABLE CLINICA                      CASCADE CONSTRAINTS;
--- DROP TABLE MEDICAMENTO                  CASCADE CONSTRAINTS;
--- DROP TABLE LOG_ERRO                     CASCADE CONSTRAINTS;
+ DROP TABLE IDEMPOTENCY_KEY              CASCADE CONSTRAINTS;
+ DROP TABLE CONSENTIMENTO                CASCADE CONSTRAINTS;
+ DROP TABLE CONTA_TUTOR                  CASCADE CONSTRAINTS;
+ DROP TABLE AGENDAMENTO                  CASCADE CONSTRAINTS;
+ DROP TABLE TRIAGEM_LUNA                 CASCADE CONSTRAINTS;
+ DROP TABLE ALERTA_TEMPERATURA           CASCADE CONSTRAINTS;
+ DROP TABLE LEITURA_TEMPERATURA          CASCADE CONSTRAINTS;
+ DROP TABLE DISPOSITIVO_IOT              CASCADE CONSTRAINTS;
+ DROP TABLE NOTIFICACAO                  CASCADE CONSTRAINTS;
+ DROP TABLE DOCUMENTO                    CASCADE CONSTRAINTS;
+ DROP TABLE EXAME                        CASCADE CONSTRAINTS;
+ DROP TABLE PRESCRICAO                   CASCADE CONSTRAINTS;
+ DROP TABLE CONSULTA                     CASCADE CONSTRAINTS;
+ DROP TABLE VACINA                       CASCADE CONSTRAINTS;
+ DROP TABLE EVENTO_CLINICO               CASCADE CONSTRAINTS;
+ DROP TABLE TIPO_EVENTO                  CASCADE CONSTRAINTS;
+ DROP TABLE INVITE_TUTOR                 CASCADE CONSTRAINTS;
+ DROP TABLE TUTOR_PET                    CASCADE CONSTRAINTS;
+ DROP TABLE PET                          CASCADE CONSTRAINTS;
+ DROP TABLE RACA                         CASCADE CONSTRAINTS;
+ DROP TABLE ESPECIE                      CASCADE CONSTRAINTS;
+ DROP TABLE TUTOR                        CASCADE CONSTRAINTS;
+ DROP TABLE VETERINARIO                  CASCADE CONSTRAINTS;
+ DROP TABLE CLINICA                      CASCADE CONSTRAINTS;
+ DROP TABLE MEDICAMENTO                  CASCADE CONSTRAINTS;
+ DROP TABLE LOG_ERRO                     CASCADE CONSTRAINTS;
 
--- DROP SEQUENCE SEQ_CLINICA;
--- DROP SEQUENCE SEQ_VETERINARIO;
--- DROP SEQUENCE SEQ_TUTOR;
--- DROP SEQUENCE SEQ_ESPECIE;
--- DROP SEQUENCE SEQ_RACA;
--- DROP SEQUENCE SEQ_PET;
--- DROP SEQUENCE SEQ_TIPO_EVENTO;
--- DROP SEQUENCE SEQ_EVENTO_CLINICO;
--- DROP SEQUENCE SEQ_CONSULTA;
--- DROP SEQUENCE SEQ_VACINA;
--- DROP SEQUENCE SEQ_MEDICAMENTO;
--- DROP SEQUENCE SEQ_PRESCRICAO;
--- DROP SEQUENCE SEQ_EXAME;
--- DROP SEQUENCE SEQ_DOCUMENTO;
--- DROP SEQUENCE SEQ_AGENDAMENTO;
--- DROP SEQUENCE SEQ_NOTIFICACAO;
--- DROP SEQUENCE SEQ_LOG_ERRO;
--- DROP SEQUENCE SEQ_DISPOSITIVO_IOT;
--- DROP SEQUENCE SEQ_LEITURA_TEMP;
--- DROP SEQUENCE SEQ_ALERTA_TEMP;
--- DROP SEQUENCE SEQ_TRIAGEM_LUNA;
--- DROP SEQUENCE SEQ_INVITE_TUTOR;
+ DROP SEQUENCE SEQ_CLINICA;
+ DROP SEQUENCE SEQ_VETERINARIO;
+ DROP SEQUENCE SEQ_TUTOR;
+ DROP SEQUENCE SEQ_ESPECIE;
+ DROP SEQUENCE SEQ_RACA;
+ DROP SEQUENCE SEQ_PET;
+ DROP SEQUENCE SEQ_TIPO_EVENTO;
+ DROP SEQUENCE SEQ_EVENTO_CLINICO;
+ DROP SEQUENCE SEQ_CONSULTA;
+ DROP SEQUENCE SEQ_VACINA;
+ DROP SEQUENCE SEQ_MEDICAMENTO;
+ DROP SEQUENCE SEQ_PRESCRICAO;
+ DROP SEQUENCE SEQ_EXAME;
+ DROP SEQUENCE SEQ_DOCUMENTO;
+ DROP SEQUENCE SEQ_AGENDAMENTO;
+ DROP SEQUENCE SEQ_NOTIFICACAO;
+ DROP SEQUENCE SEQ_LOG_ERRO;
+ DROP SEQUENCE SEQ_DISPOSITIVO_IOT;
+ DROP SEQUENCE SEQ_LEITURA_TEMP;
+ DROP SEQUENCE SEQ_ALERTA_TEMP;
+ DROP SEQUENCE SEQ_TRIAGEM_LUNA;
+ DROP SEQUENCE SEQ_INVITE_TUTOR;
 
--- DROP VIEW VW_TIMELINE_PET;
--- DROP VIEW VW_VACINAS_VENCENDO;
+ DROP VIEW VW_TIMELINE_PET;
+ DROP VIEW VW_VACINAS_VENCENDO;
 
 -- ============================================================================
 -- 1. SEQUENCES — tabelas .NET + AGENDAMENTO (Java usa GenerationType.SEQUENCE)
@@ -967,17 +968,14 @@ COMMENT ON TABLE VW_TIMELINE_CLINICA IS 'Timeline clínica completa por pet (eve
 -- ============================================================================
 
 -- ============================================================================
--- SEÇÃO 2 — REQ 1: PROCEDURES DE CARGA PARAMETRIZADAS (20 pts)
--- Regras atendidas:
---   [R1.1] Carga via parâmetro — SEM hard-code
---   [R1.2] EXCEPTION WHEN OTHERS em todos os blocos
---   [R1.3] + 2 exceções específicas por procedure (DUP_VAL_ON_INDEX,
---           VALUE_ERROR, NO_DATA_FOUND)
---   [R1.4] Log gravado em LOG_ERRO com: nome proc, usuário, data,
---           SQLCODE, SQLERRM, parâmetros
--- Tabelas cobertas: CLINICA · ESPECIE · VETERINARIO · TUTOR · PET
--- ============================================================================
-
+-- SEÇÃO 2 — PROCEDURES CORRIGIDAS (ORA-00984)
+-- Correção única aplicada: SQLCODE e SQLERRM não podem ser usados dentro de um
+-- comando SQL. Agora são capturados em v_erro_cod / v_erro_msg na PRIMEIRA
+-- linha de cada handler e as variáveis é que entram no INSERT INTO LOG_ERRO.
+-- Nenhuma outra alteração: lógica, parâmetros, validações, mensagens, COMMIT/
+-- ROLLBACK e nomes de exceção permanecem exatamente como estavam.
+-- ############################################################################
+ 
 -- ----------------------------------------------------------------------------
 -- PROCEDURE 1 — PRC_INSERT_CLINICA
 -- Insere clínica veterinária. Parâmetros ancorados com %TYPE.
@@ -997,7 +995,9 @@ CREATE OR REPLACE PROCEDURE PRC_INSERT_CLINICA (
     p_ds_email_acesso  IN CLINICA.DS_EMAIL_ACESSO%TYPE,
     p_ds_senha_hash    IN CLINICA.DS_SENHA_HASH%TYPE
 ) AS
-    c_proc CONSTANT VARCHAR2(120) := 'PRC_INSERT_CLINICA';
+    c_proc     CONSTANT VARCHAR2(120) := 'PRC_INSERT_CLINICA';
+    v_erro_cod NUMBER;          -- recebe SQLCODE (não pode ir direto no SQL)
+    v_erro_msg VARCHAR2(2000);  -- recebe SQLERRM (não pode ir direto no SQL)
 BEGIN
     INSERT INTO CLINICA (
         ID_CLINICA, NM_CLINICA, NR_CNPJ, NM_RAZAO_SOCIAL,
@@ -1016,36 +1016,42 @@ BEGIN
 EXCEPTION
     -- Exceção específica 1: violação de UNIQUE (CNPJ ou e-mail duplicado)
     WHEN DUP_VAL_ON_INDEX THEN
+        v_erro_cod := SQLCODE;
+        v_erro_msg := SQLERRM;
         ROLLBACK;
         INSERT INTO LOG_ERRO (ID_LOG, NM_PROCEDURE, NM_USUARIO, DT_ERRO,
                               NR_CODIGO_ERRO, DS_MENSAGEM_ERRO, DS_PARAMETROS)
         VALUES (SEQ_LOG_ERRO.NEXTVAL, c_proc, USER, SYSTIMESTAMP,
-                SQLCODE, 'DUP_VAL_ON_INDEX: CNPJ ou e-mail ja cadastrado. ' || SQLERRM,
+                v_erro_cod, 'DUP_VAL_ON_INDEX: CNPJ ou e-mail ja cadastrado. ' || v_erro_msg,
                 'NM_CLINICA=' || p_nm_clinica || ' | NR_CNPJ=' || p_nr_cnpj);
         COMMIT;
         DBMS_OUTPUT.PUT_LINE('[ERRO] Clinica duplicada — log gravado.');
     -- Exceção específica 2: valor fora do tamanho do campo
     WHEN VALUE_ERROR THEN
+        v_erro_cod := SQLCODE;
+        v_erro_msg := SQLERRM;
         ROLLBACK;
         INSERT INTO LOG_ERRO (ID_LOG, NM_PROCEDURE, NM_USUARIO, DT_ERRO,
                               NR_CODIGO_ERRO, DS_MENSAGEM_ERRO, DS_PARAMETROS)
         VALUES (SEQ_LOG_ERRO.NEXTVAL, c_proc, USER, SYSTIMESTAMP,
-                SQLCODE, 'VALUE_ERROR: Campo com tamanho/tipo invalido. ' || SQLERRM,
+                v_erro_cod, 'VALUE_ERROR: Campo com tamanho/tipo invalido. ' || v_erro_msg,
                 'NM_CLINICA=' || p_nm_clinica);
         COMMIT;
         DBMS_OUTPUT.PUT_LINE('[ERRO] Valor invalido — log gravado.');
     WHEN OTHERS THEN
+        v_erro_cod := SQLCODE;
+        v_erro_msg := SQLERRM;
         ROLLBACK;
         INSERT INTO LOG_ERRO (ID_LOG, NM_PROCEDURE, NM_USUARIO, DT_ERRO,
                               NR_CODIGO_ERRO, DS_MENSAGEM_ERRO, DS_PARAMETROS)
         VALUES (SEQ_LOG_ERRO.NEXTVAL, c_proc, USER, SYSTIMESTAMP,
-                SQLCODE, 'OTHERS: ' || SQLERRM,
+                v_erro_cod, 'OTHERS: ' || v_erro_msg,
                 'NM_CLINICA=' || p_nm_clinica || ' | NR_CNPJ=' || p_nr_cnpj);
         COMMIT;
         DBMS_OUTPUT.PUT_LINE('[ERRO] Erro inesperado — log gravado.');
 END PRC_INSERT_CLINICA;
 /
-
+ 
 -- ----------------------------------------------------------------------------
 -- PROCEDURE 2 — PRC_INSERT_ESPECIE
 -- Insere espécie animal (ex: Cão, Gato, Ave).
@@ -1054,7 +1060,9 @@ END PRC_INSERT_CLINICA;
 CREATE OR REPLACE PROCEDURE PRC_INSERT_ESPECIE (
     p_nm_especie IN ESPECIE.NM_ESPECIE%TYPE
 ) AS
-    c_proc CONSTANT VARCHAR2(120) := 'PRC_INSERT_ESPECIE';
+    c_proc     CONSTANT VARCHAR2(120) := 'PRC_INSERT_ESPECIE';
+    v_erro_cod NUMBER;
+    v_erro_msg VARCHAR2(2000);
 BEGIN
     INSERT INTO ESPECIE (ID_ESPECIE, NM_ESPECIE, DT_CRIACAO)
     VALUES (SEQ_ESPECIE.NEXTVAL, p_nm_especie, SYSTIMESTAMP);
@@ -1062,35 +1070,41 @@ BEGIN
     DBMS_OUTPUT.PUT_LINE('[OK] Especie inserida: ' || p_nm_especie);
 EXCEPTION
     WHEN DUP_VAL_ON_INDEX THEN
+        v_erro_cod := SQLCODE;
+        v_erro_msg := SQLERRM;
         ROLLBACK;
         INSERT INTO LOG_ERRO (ID_LOG, NM_PROCEDURE, NM_USUARIO, DT_ERRO,
                               NR_CODIGO_ERRO, DS_MENSAGEM_ERRO, DS_PARAMETROS)
         VALUES (SEQ_LOG_ERRO.NEXTVAL, c_proc, USER, SYSTIMESTAMP,
-                SQLCODE, 'DUP_VAL_ON_INDEX: Especie ja cadastrada. ' || SQLERRM,
+                v_erro_cod, 'DUP_VAL_ON_INDEX: Especie ja cadastrada. ' || v_erro_msg,
                 'NM_ESPECIE=' || p_nm_especie);
         COMMIT;
         DBMS_OUTPUT.PUT_LINE('[ERRO] Especie duplicada — log gravado.');
     WHEN VALUE_ERROR THEN
+        v_erro_cod := SQLCODE;
+        v_erro_msg := SQLERRM;
         ROLLBACK;
         INSERT INTO LOG_ERRO (ID_LOG, NM_PROCEDURE, NM_USUARIO, DT_ERRO,
                               NR_CODIGO_ERRO, DS_MENSAGEM_ERRO, DS_PARAMETROS)
         VALUES (SEQ_LOG_ERRO.NEXTVAL, c_proc, USER, SYSTIMESTAMP,
-                SQLCODE, 'VALUE_ERROR: Nome da especie invalido. ' || SQLERRM,
+                v_erro_cod, 'VALUE_ERROR: Nome da especie invalido. ' || v_erro_msg,
                 'NM_ESPECIE=' || p_nm_especie);
         COMMIT;
         DBMS_OUTPUT.PUT_LINE('[ERRO] Valor invalido — log gravado.');
     WHEN OTHERS THEN
+        v_erro_cod := SQLCODE;
+        v_erro_msg := SQLERRM;
         ROLLBACK;
         INSERT INTO LOG_ERRO (ID_LOG, NM_PROCEDURE, NM_USUARIO, DT_ERRO,
                               NR_CODIGO_ERRO, DS_MENSAGEM_ERRO, DS_PARAMETROS)
         VALUES (SEQ_LOG_ERRO.NEXTVAL, c_proc, USER, SYSTIMESTAMP,
-                SQLCODE, 'OTHERS: ' || SQLERRM,
+                v_erro_cod, 'OTHERS: ' || v_erro_msg,
                 'NM_ESPECIE=' || p_nm_especie);
         COMMIT;
         DBMS_OUTPUT.PUT_LINE('[ERRO] Erro inesperado — log gravado.');
 END PRC_INSERT_ESPECIE;
 /
-
+ 
 -- ----------------------------------------------------------------------------
 -- PROCEDURE 3 — PRC_INSERT_VETERINARIO
 -- Insere veterinário vinculado a uma clínica (com validação FK prévia).
@@ -1106,12 +1120,14 @@ CREATE OR REPLACE PROCEDURE PRC_INSERT_VETERINARIO (
 ) AS
     c_proc            CONSTANT VARCHAR2(120) := 'PRC_INSERT_VETERINARIO';
     v_id_clinica_chk  NUMBER(10);
+    v_erro_cod        NUMBER;
+    v_erro_msg        VARCHAR2(2000);
 BEGIN
     -- Valida FK antes do INSERT: gera NO_DATA_FOUND se clínica inativa/inexistente
     SELECT ID_CLINICA INTO v_id_clinica_chk
     FROM   CLINICA
     WHERE  ID_CLINICA = p_id_clinica AND ST_ATIVA = 'S';
-
+ 
     INSERT INTO VETERINARIO (
         ID_VETERINARIO, ID_CLINICA, NM_VETERINARIO,
         NR_CRMV, DS_EMAIL, NR_TELEFONE, ST_ATIVO, DT_CRIACAO
@@ -1123,35 +1139,41 @@ BEGIN
     DBMS_OUTPUT.PUT_LINE('[OK] Veterinario inserido: ' || p_nm_veterinario);
 EXCEPTION
     WHEN DUP_VAL_ON_INDEX THEN
+        v_erro_cod := SQLCODE;
+        v_erro_msg := SQLERRM;
         ROLLBACK;
         INSERT INTO LOG_ERRO (ID_LOG, NM_PROCEDURE, NM_USUARIO, DT_ERRO,
                               NR_CODIGO_ERRO, DS_MENSAGEM_ERRO, DS_PARAMETROS)
         VALUES (SEQ_LOG_ERRO.NEXTVAL, c_proc, USER, SYSTIMESTAMP,
-                SQLCODE, 'DUP_VAL_ON_INDEX: CRMV ou e-mail ja cadastrado. ' || SQLERRM,
+                v_erro_cod, 'DUP_VAL_ON_INDEX: CRMV ou e-mail ja cadastrado. ' || v_erro_msg,
                 'NR_CRMV=' || p_nr_crmv || ' | DS_EMAIL=' || p_ds_email);
         COMMIT;
         DBMS_OUTPUT.PUT_LINE('[ERRO] Veterinario duplicado — log gravado.');
     WHEN NO_DATA_FOUND THEN
+        v_erro_cod := SQLCODE;
+        v_erro_msg := SQLERRM;
         ROLLBACK;
         INSERT INTO LOG_ERRO (ID_LOG, NM_PROCEDURE, NM_USUARIO, DT_ERRO,
                               NR_CODIGO_ERRO, DS_MENSAGEM_ERRO, DS_PARAMETROS)
         VALUES (SEQ_LOG_ERRO.NEXTVAL, c_proc, USER, SYSTIMESTAMP,
-                SQLCODE, 'NO_DATA_FOUND: Clinica inexistente ou inativa. ' || SQLERRM,
+                v_erro_cod, 'NO_DATA_FOUND: Clinica inexistente ou inativa. ' || v_erro_msg,
                 'ID_CLINICA=' || p_id_clinica);
         COMMIT;
         DBMS_OUTPUT.PUT_LINE('[ERRO] Clinica nao encontrada — log gravado.');
     WHEN OTHERS THEN
+        v_erro_cod := SQLCODE;
+        v_erro_msg := SQLERRM;
         ROLLBACK;
         INSERT INTO LOG_ERRO (ID_LOG, NM_PROCEDURE, NM_USUARIO, DT_ERRO,
                               NR_CODIGO_ERRO, DS_MENSAGEM_ERRO, DS_PARAMETROS)
         VALUES (SEQ_LOG_ERRO.NEXTVAL, c_proc, USER, SYSTIMESTAMP,
-                SQLCODE, 'OTHERS: ' || SQLERRM,
+                v_erro_cod, 'OTHERS: ' || v_erro_msg,
                 'NM_VETERINARIO=' || p_nm_veterinario || ' | ID_CLINICA=' || p_id_clinica);
         COMMIT;
         DBMS_OUTPUT.PUT_LINE('[ERRO] Erro inesperado — log gravado.');
 END PRC_INSERT_VETERINARIO;
 /
-
+ 
 -- ----------------------------------------------------------------------------
 -- PROCEDURE 4 — PRC_INSERT_TUTOR
 -- Insere tutor (responsável pelo pet) vinculado a uma clínica.
@@ -1168,7 +1190,9 @@ CREATE OR REPLACE PROCEDURE PRC_INSERT_TUTOR (
     p_nm_cidade    IN TUTOR.NM_CIDADE%TYPE,
     p_sg_uf        IN TUTOR.SG_UF%TYPE
 ) AS
-    c_proc CONSTANT VARCHAR2(120) := 'PRC_INSERT_TUTOR';
+    c_proc     CONSTANT VARCHAR2(120) := 'PRC_INSERT_TUTOR';
+    v_erro_cod NUMBER;
+    v_erro_msg VARCHAR2(2000);
 BEGIN
     INSERT INTO TUTOR (
         ID_TUTOR, ID_CLINICA, NM_TUTOR, NR_CPF,
@@ -1185,35 +1209,41 @@ BEGIN
     DBMS_OUTPUT.PUT_LINE('[OK] Tutor inserido: ' || p_nm_tutor);
 EXCEPTION
     WHEN DUP_VAL_ON_INDEX THEN
+        v_erro_cod := SQLCODE;
+        v_erro_msg := SQLERRM;
         ROLLBACK;
         INSERT INTO LOG_ERRO (ID_LOG, NM_PROCEDURE, NM_USUARIO, DT_ERRO,
                               NR_CODIGO_ERRO, DS_MENSAGEM_ERRO, DS_PARAMETROS)
         VALUES (SEQ_LOG_ERRO.NEXTVAL, c_proc, USER, SYSTIMESTAMP,
-                SQLCODE, 'DUP_VAL_ON_INDEX: CPF ou e-mail ja cadastrado. ' || SQLERRM,
+                v_erro_cod, 'DUP_VAL_ON_INDEX: CPF ou e-mail ja cadastrado. ' || v_erro_msg,
                 'NR_CPF=' || p_nr_cpf || ' | DS_EMAIL=' || p_ds_email);
         COMMIT;
         DBMS_OUTPUT.PUT_LINE('[ERRO] Tutor duplicado — log gravado.');
     WHEN VALUE_ERROR THEN
+        v_erro_cod := SQLCODE;
+        v_erro_msg := SQLERRM;
         ROLLBACK;
         INSERT INTO LOG_ERRO (ID_LOG, NM_PROCEDURE, NM_USUARIO, DT_ERRO,
                               NR_CODIGO_ERRO, DS_MENSAGEM_ERRO, DS_PARAMETROS)
         VALUES (SEQ_LOG_ERRO.NEXTVAL, c_proc, USER, SYSTIMESTAMP,
-                SQLCODE, 'VALUE_ERROR: Dado com tipo ou tamanho invalido. ' || SQLERRM,
+                v_erro_cod, 'VALUE_ERROR: Dado com tipo ou tamanho invalido. ' || v_erro_msg,
                 'NM_TUTOR=' || p_nm_tutor || ' | SG_UF=' || p_sg_uf);
         COMMIT;
         DBMS_OUTPUT.PUT_LINE('[ERRO] Valor invalido — log gravado.');
     WHEN OTHERS THEN
+        v_erro_cod := SQLCODE;
+        v_erro_msg := SQLERRM;
         ROLLBACK;
         INSERT INTO LOG_ERRO (ID_LOG, NM_PROCEDURE, NM_USUARIO, DT_ERRO,
                               NR_CODIGO_ERRO, DS_MENSAGEM_ERRO, DS_PARAMETROS)
         VALUES (SEQ_LOG_ERRO.NEXTVAL, c_proc, USER, SYSTIMESTAMP,
-                SQLCODE, 'OTHERS: ' || SQLERRM,
+                v_erro_cod, 'OTHERS: ' || v_erro_msg,
                 'NM_TUTOR=' || p_nm_tutor || ' | ID_CLINICA=' || p_id_clinica);
         COMMIT;
         DBMS_OUTPUT.PUT_LINE('[ERRO] Erro inesperado — log gravado.');
 END PRC_INSERT_TUTOR;
 /
-
+ 
 -- ----------------------------------------------------------------------------
 -- PROCEDURE 5 — PRC_INSERT_PET
 -- Insere pet vinculado a clínica e espécie (valida domínios antes do INSERT).
@@ -1231,17 +1261,19 @@ CREATE OR REPLACE PROCEDURE PRC_INSERT_PET (
 ) AS
     c_proc             CONSTANT VARCHAR2(120) := 'PRC_INSERT_PET';
     v_id_especie_chk   NUMBER(10);
+    v_erro_cod         NUMBER;
+    v_erro_msg         VARCHAR2(2000);
 BEGIN
     -- Validação semântica de sexo e porte (gera mensagem legível no LOG_ERRO)
     IF p_sg_sexo NOT IN ('M', 'F') OR p_sg_porte NOT IN ('P', 'M', 'G') THEN
         RAISE VALUE_ERROR;
     END IF;
-
+ 
     -- Valida existência da espécie
     SELECT ID_ESPECIE INTO v_id_especie_chk
     FROM   ESPECIE
     WHERE  ID_ESPECIE = p_id_especie;
-
+ 
     INSERT INTO PET (
         ID_PET, ID_CLINICA, ID_ESPECIE, ID_RACA,
         NM_PET, DT_NASCIMENTO, SG_SEXO, SG_PORTE,
@@ -1257,11 +1289,13 @@ BEGIN
                          || ' | Porte: ' || p_sg_porte);
 EXCEPTION
     WHEN NO_DATA_FOUND THEN
+        v_erro_cod := SQLCODE;
+        v_erro_msg := SQLERRM;
         ROLLBACK;
         INSERT INTO LOG_ERRO (ID_LOG, NM_PROCEDURE, NM_USUARIO, DT_ERRO,
                               NR_CODIGO_ERRO, DS_MENSAGEM_ERRO, DS_PARAMETROS)
         VALUES (SEQ_LOG_ERRO.NEXTVAL, c_proc, USER, SYSTIMESTAMP,
-                SQLCODE, 'NO_DATA_FOUND: Especie nao encontrada. ' || SQLERRM,
+                v_erro_cod, 'NO_DATA_FOUND: Especie nao encontrada. ' || v_erro_msg,
                 'ID_ESPECIE=' || p_id_especie || ' | NM_PET=' || p_nm_pet);
         COMMIT;
         DBMS_OUTPUT.PUT_LINE('[ERRO] Especie invalida — log gravado.');
@@ -1276,11 +1310,13 @@ EXCEPTION
         COMMIT;
         DBMS_OUTPUT.PUT_LINE('[ERRO] Sexo ou porte invalido — log gravado.');
     WHEN OTHERS THEN
+        v_erro_cod := SQLCODE;
+        v_erro_msg := SQLERRM;
         ROLLBACK;
         INSERT INTO LOG_ERRO (ID_LOG, NM_PROCEDURE, NM_USUARIO, DT_ERRO,
                               NR_CODIGO_ERRO, DS_MENSAGEM_ERRO, DS_PARAMETROS)
         VALUES (SEQ_LOG_ERRO.NEXTVAL, c_proc, USER, SYSTIMESTAMP,
-                SQLCODE, 'OTHERS: ' || SQLERRM,
+                v_erro_cod, 'OTHERS: ' || v_erro_msg,
                 'NM_PET=' || p_nm_pet || ' | ID_CLINICA=' || p_id_clinica);
         COMMIT;
         DBMS_OUTPUT.PUT_LINE('[ERRO] Erro inesperado — log gravado.');
@@ -1976,7 +2012,7 @@ DECLARE
             a.NM_PACIENTE,
             v.NM_VETERINARIO,
             c.NM_CLINICA,
-            ROUND((SYSTIMESTAMP - a.DT_AGENDAMENTO) * 24, 1) AS HORAS_DIFF
+            ROUND((CAST(SYSTIMESTAMP AS DATE) - CAST(a.DT_AGENDAMENTO AS DATE)) * 24, 1) AS HORAS_DIFF
         FROM   AGENDAMENTO  a
         JOIN   CLINICA      c  ON c.ID_CLINICA     = a.ID_CLINICA
         LEFT JOIN VETERINARIO v ON v.ID_VETERINARIO = a.ID_VETERINARIO
@@ -1996,9 +2032,9 @@ DECLARE
     v_criticos   NUMBER := 0;
 BEGIN
     DBMS_OUTPUT.PUT_LINE('');
-    DBMS_OUTPUT.PUT_LINE('████████████████████████████████████████████████████');
+    DBMS_OUTPUT.PUT_LINE('---------------------------------------------------------------------------------');
     DBMS_OUTPUT.PUT_LINE(' RELATORIO III — AGENDAMENTOS PENDENTES / ACAO');
-    DBMS_OUTPUT.PUT_LINE('████████████████████████████████████████████████████');
+    DBMS_OUTPUT.PUT_LINE('---------------------------------------------------------------------------------');
     DBMS_OUTPUT.PUT_LINE(
         RPAD('ID', 8) || RPAD('STATUS', 16) || RPAD('TIPO', 14)
         || RPAD('PACIENTE', 14) || RPAD('VET', 22) || 'ACAO'
