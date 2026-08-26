@@ -2171,6 +2171,1546 @@ BEGIN
 END;
 /
 
+
 -- ============================================================================
+-- SEÇÃO 6 — SPRINT 3 · MASTERING RELATIONAL AND NON-RELATIONAL DATABASE
+-- ============================================================================
+-- Escopo exigido pela 3ª Sprint (100 pts):
+--   [S3.1] Procedimento 1 (30 pts) — JOIN >= 2 tabelas + saída em JSON (string)
+--          gerada MANUALMENTE por função do grupo; >= 5 registros por tabela
+--          usada; >= 3 exceções distintas tratadas com EXCEPTION WHEN.
+--   [S3.2] Procedimento 2 (30 pts) — leitura de tabela de FATOS com 2 colunas
+--          categóricas + 1 numérica; soma por combinação, SUB-TOTAL da 1ª
+--          categoria e TOTAL GERAL. Somatório 100% manual (proibido ROLLUP,
+--          CUBE, GROUPING SETS, GROUPING). Colunas de agrupamento NULAS nas
+--          linhas de sub-total/total. >= 3 exceções distintas.
+--   [S3.3] Função 1 (parte dos 30 pts de funções) — relacional -> JSON string,
+--          lógica de conversão própria. PROIBIDO JSON_OBJECT, JSON_VALUE,
+--          JSON_QUERY, JSON_TABLE, TO_JSON ou similares. >= 3 exceções.
+--   [S3.4] Função 2 — substitui processo lógico do projeto (validação de senha
+--          do CONTA_TUTOR). >= 3 exceções.
+--   [S3.5] Trigger de Auditoria DML (30 pts) — tabela de auditoria com usuário,
+--          tipo da operação, data/hora, valores :OLD e :NEW; trigger
+--          AFTER INSERT OR UPDATE OR DELETE.
+--   [S3.6] Carga complementar garantindo >= 5 registros nas tabelas usadas.
+--
+-- OBSERVAÇÃO: nada das Seções 1 a 5 foi alterado. Esta seção é 100% aditiva e
+-- reutiliza as procedures de carga da Seção 2 (REQ 1).
+-- ============================================================================
+ 
+-- ----------------------------------------------------------------------------
+-- 6.0 — LIMPEZA DOS OBJETOS DA SPRINT 3 (descomentar para re-executar)
+-- ----------------------------------------------------------------------------
+-- DROP TRIGGER   TRG_AUDIT_AGENDAMENTO;
+-- DROP PROCEDURE PRC_EXPORTA_PETS_JSON;
+-- DROP PROCEDURE PRC_TOTALIZA_AGENDA_MINUTOS;
+-- DROP FUNCTION  FNC_JSON_PET;
+-- DROP FUNCTION  FNC_VALIDA_SENHA_TUTOR;
+-- DROP TABLE     AUDITORIA_AGENDAMENTO CASCADE CONSTRAINTS;
+-- DROP SEQUENCE  SEQ_AUDITORIA;
+ 
+ 
+-- ============================================================================
+-- 6.1 — DDL DA AUDITORIA (requisito S3.5)
+-- Tabela sem FK: auditoria nunca pode falhar por violação referencial nem
+-- impedir o DML original. Guarda o "antes" (:OLD) e o "depois" (:NEW).
+-- ============================================================================
+ 
+CREATE SEQUENCE SEQ_AUDITORIA START WITH 1 INCREMENT BY 1 NOCACHE NOCYCLE;
+ 
+CREATE TABLE AUDITORIA_AGENDAMENTO (
+    ID_AUDITORIA           NUMBER(15)     DEFAULT SEQ_AUDITORIA.NEXTVAL NOT NULL,
+    NM_USUARIO             VARCHAR2(60)   NOT NULL,   -- USER do banco
+    DS_OPERACAO            VARCHAR2(10)   NOT NULL,   -- INSERT | UPDATE | DELETE
+    DT_OPERACAO            TIMESTAMP      DEFAULT SYSTIMESTAMP NOT NULL,
+    ID_AGENDAMENTO         NUMBER(10),                -- PK do registro afetado
+    DS_VALORES_ANTERIORES  VARCHAR2(4000),            -- snapshot :OLD
+    DS_VALORES_NOVOS       VARCHAR2(4000),            -- snapshot :NEW
+    CONSTRAINT PK_AUDITORIA_AGEND PRIMARY KEY (ID_AUDITORIA),
+    CONSTRAINT CK_AUDIT_OPERACAO  CHECK (DS_OPERACAO IN ('INSERT','UPDATE','DELETE'))
+);
+ 
+CREATE INDEX IDX_AUDIT_AGEND_DATA ON AUDITORIA_AGENDAMENTO(DT_OPERACAO DESC);
+CREATE INDEX IDX_AUDIT_AGEND_REG  ON AUDITORIA_AGENDAMENTO(ID_AGENDAMENTO);
+ 
+COMMENT ON TABLE  AUDITORIA_AGENDAMENTO                       IS 'Trilha de auditoria DML da tabela AGENDAMENTO (Sprint 3 — FIAP). Gravada pela TRG_AUDIT_AGENDAMENTO.';
+COMMENT ON COLUMN AUDITORIA_AGENDAMENTO.NM_USUARIO            IS 'Usuário Oracle que executou a operação (função USER).';
+COMMENT ON COLUMN AUDITORIA_AGENDAMENTO.DS_OPERACAO           IS 'Tipo do DML capturado: INSERT, UPDATE ou DELETE.';
+COMMENT ON COLUMN AUDITORIA_AGENDAMENTO.DS_VALORES_ANTERIORES IS 'Snapshot dos valores :OLD — nulo em INSERT.';
+COMMENT ON COLUMN AUDITORIA_AGENDAMENTO.DS_VALORES_NOVOS      IS 'Snapshot dos valores :NEW — nulo em DELETE.';
+ 
+ 
+-- ============================================================================
+-- 6.2 — TRIGGER DE AUDITORIA (requisito S3.5) — 30 pts
+-- AFTER INSERT OR UPDATE OR DELETE ON AGENDAMENTO, FOR EACH ROW.
+-- Criada ANTES da carga complementar (6.3) para que todos os INSERTs
+-- seguintes já fiquem registrados na trilha de auditoria.
+-- Regra: a trigger nunca aborta o DML de negócio — se ela falhar, o erro vai
+-- para LOG_ERRO e a operação original continua.
+-- ============================================================================
+ 
+CREATE OR REPLACE TRIGGER TRG_AUDIT_AGENDAMENTO
+AFTER INSERT OR UPDATE OR DELETE ON AGENDAMENTO
+FOR EACH ROW
+DECLARE
+    c_trg     CONSTANT VARCHAR2(120) := 'TRG_AUDIT_AGENDAMENTO';
+    v_erro_cod        NUMBER;          -- captura de SQLCODE (uso proibido em SQL)
+    v_erro_msg        VARCHAR2(2000);  -- captura de SQLERRM (uso proibido em SQL)
+    v_operacao         VARCHAR2(10);
+    v_valores_antigos  VARCHAR2(4000);
+    v_valores_novos    VARCHAR2(4000);
+    v_id_registro      NUMBER(10);
+BEGIN
+    -- 1) Identifica o tipo de DML disparado
+    IF INSERTING THEN
+        v_operacao := 'INSERT';
+    ELSIF UPDATING THEN
+        v_operacao := 'UPDATE';
+    ELSE
+        v_operacao := 'DELETE';
+    END IF;
+ 
+    -- 2) Snapshot dos valores ANTERIORES (:OLD) — não existe em INSERT
+    IF UPDATING OR DELETING THEN
+        v_valores_antigos :=
+               'ID_AGENDAMENTO='       || TO_CHAR(:OLD.ID_AGENDAMENTO)
+            || ' | ID_CLINICA='        || TO_CHAR(:OLD.ID_CLINICA)
+            || ' | ID_VETERINARIO='    || NVL(TO_CHAR(:OLD.ID_VETERINARIO), 'null')
+            || ' | ID_PET='            || NVL(TO_CHAR(:OLD.ID_PET), 'null')
+            || ' | NM_PACIENTE='       || NVL(:OLD.NM_PACIENTE, 'null')
+            || ' | DS_SERVICO='        || NVL(:OLD.DS_SERVICO, 'null')
+            || ' | DT_AGENDAMENTO='    || TO_CHAR(:OLD.DT_AGENDAMENTO, 'DD/MM/YYYY HH24:MI:SS')
+            || ' | NR_DURACAO_MINUTOS='|| NVL(TO_CHAR(:OLD.NR_DURACAO_MINUTOS), 'null')
+            || ' | ST_STATUS='         || :OLD.ST_STATUS;
+    END IF;
+ 
+    -- 3) Snapshot dos valores NOVOS (:NEW) — não existe em DELETE
+    IF INSERTING OR UPDATING THEN
+        v_valores_novos :=
+               'ID_AGENDAMENTO='       || TO_CHAR(:NEW.ID_AGENDAMENTO)
+            || ' | ID_CLINICA='        || TO_CHAR(:NEW.ID_CLINICA)
+            || ' | ID_VETERINARIO='    || NVL(TO_CHAR(:NEW.ID_VETERINARIO), 'null')
+            || ' | ID_PET='            || NVL(TO_CHAR(:NEW.ID_PET), 'null')
+            || ' | NM_PACIENTE='       || NVL(:NEW.NM_PACIENTE, 'null')
+            || ' | DS_SERVICO='        || NVL(:NEW.DS_SERVICO, 'null')
+            || ' | DT_AGENDAMENTO='    || TO_CHAR(:NEW.DT_AGENDAMENTO, 'DD/MM/YYYY HH24:MI:SS')
+            || ' | NR_DURACAO_MINUTOS='|| NVL(TO_CHAR(:NEW.NR_DURACAO_MINUTOS), 'null')
+            || ' | ST_STATUS='         || :NEW.ST_STATUS;
+    END IF;
+ 
+    -- 4) PK do registro afetado (em DELETE só existe :OLD)
+    v_id_registro := NVL(:NEW.ID_AGENDAMENTO, :OLD.ID_AGENDAMENTO);
+ 
+    -- 5) Grava a trilha
+    INSERT INTO AUDITORIA_AGENDAMENTO (
+        ID_AUDITORIA, NM_USUARIO, DS_OPERACAO, DT_OPERACAO,
+        ID_AGENDAMENTO, DS_VALORES_ANTERIORES, DS_VALORES_NOVOS
+    ) VALUES (
+        SEQ_AUDITORIA.NEXTVAL, USER, v_operacao, SYSTIMESTAMP,
+        v_id_registro, v_valores_antigos, v_valores_novos
+    );
+EXCEPTION
+    -- Exceção 1: snapshot maior que VARCHAR2(4000) ou conversão inválida
+    WHEN VALUE_ERROR THEN
+        v_erro_cod := SQLCODE;   -- capturado ANTES de qualquer SQL
+        v_erro_msg := SQLERRM;
+        INSERT INTO LOG_ERRO (ID_LOG, NM_PROCEDURE, NM_USUARIO, DT_ERRO,
+                              NR_CODIGO_ERRO, DS_MENSAGEM_ERRO, DS_PARAMETROS)
+        VALUES (SEQ_LOG_ERRO.NEXTVAL, c_trg, USER, SYSTIMESTAMP,
+                -6502, 'VALUE_ERROR: snapshot :OLD/:NEW excedeu o tamanho da coluna. ' || v_erro_msg,
+                'ID_AGENDAMENTO=' || NVL(TO_CHAR(v_id_registro), 'null'));
+    -- Exceção 2: sequence/tabela de auditoria indisponível
+    WHEN DUP_VAL_ON_INDEX THEN
+        v_erro_cod := SQLCODE;   -- capturado ANTES de qualquer SQL
+        v_erro_msg := SQLERRM;
+        INSERT INTO LOG_ERRO (ID_LOG, NM_PROCEDURE, NM_USUARIO, DT_ERRO,
+                              NR_CODIGO_ERRO, DS_MENSAGEM_ERRO, DS_PARAMETROS)
+        VALUES (SEQ_LOG_ERRO.NEXTVAL, c_trg, USER, SYSTIMESTAMP,
+                v_erro_cod, 'DUP_VAL_ON_INDEX: PK de auditoria duplicada. ' || v_erro_msg,
+                'ID_AGENDAMENTO=' || NVL(TO_CHAR(v_id_registro), 'null'));
+    -- Exceção 3: qualquer outra falha — auditoria nunca derruba o DML de negócio
+    WHEN OTHERS THEN
+        v_erro_cod := SQLCODE;   -- capturado ANTES de qualquer SQL
+        v_erro_msg := SQLERRM;
+        INSERT INTO LOG_ERRO (ID_LOG, NM_PROCEDURE, NM_USUARIO, DT_ERRO,
+                              NR_CODIGO_ERRO, DS_MENSAGEM_ERRO, DS_PARAMETROS)
+        VALUES (SEQ_LOG_ERRO.NEXTVAL, c_trg, USER, SYSTIMESTAMP,
+                v_erro_cod, 'OTHERS: ' || v_erro_msg,
+                'OPERACAO=' || v_operacao);
+END TRG_AUDIT_AGENDAMENTO;
+/
+ 
+ 
+-- ============================================================================
+-- 6.3 — CARGA COMPLEMENTAR (requisito S3.6)
+-- Garante >= 5 registros válidos em TODAS as tabelas usadas pelos
+-- procedimentos da Sprint 3: CLINICA, ESPECIE, RACA, VETERINARIO, TUTOR,
+-- PET e AGENDAMENTO (tabela de fatos).
+-- Reutiliza as procedures parametrizadas da SEÇÃO 2 (REQ 1) — sem hard-code
+-- de IDs: todas as chaves são resolvidas por SELECT sobre chaves de negócio.
+-- ============================================================================
+ 
+DECLARE
+    v_cli_01  CLINICA.ID_CLINICA%TYPE;
+    v_cli_02  CLINICA.ID_CLINICA%TYPE;
+    v_cli_03  CLINICA.ID_CLINICA%TYPE;
+    v_cli_04  CLINICA.ID_CLINICA%TYPE;
+    v_cli_05  CLINICA.ID_CLINICA%TYPE;
+ 
+    v_esp_cao   ESPECIE.ID_ESPECIE%TYPE;
+    v_esp_gato  ESPECIE.ID_ESPECIE%TYPE;
+    v_esp_coel  ESPECIE.ID_ESPECIE%TYPE;
+ 
+    v_raca_lab  RACA.ID_RACA%TYPE;
+    v_raca_sia  RACA.ID_RACA%TYPE;
+    v_raca_min  RACA.ID_RACA%TYPE;
+ 
+    v_vet_01  VETERINARIO.ID_VETERINARIO%TYPE;
+    v_vet_02  VETERINARIO.ID_VETERINARIO%TYPE;
+    v_vet_03  VETERINARIO.ID_VETERINARIO%TYPE;
+    v_vet_04  VETERINARIO.ID_VETERINARIO%TYPE;
+    v_vet_05  VETERINARIO.ID_VETERINARIO%TYPE;
+ 
+    v_tut_01  TUTOR.ID_TUTOR%TYPE;
+    v_tut_04  TUTOR.ID_TUTOR%TYPE;
+    v_tut_05  TUTOR.ID_TUTOR%TYPE;
+ 
+    v_pet_thor  PET.ID_PET%TYPE;
+    v_pet_mia   PET.ID_PET%TYPE;
+    v_pet_nina  PET.ID_PET%TYPE;
+BEGIN
+    DBMS_OUTPUT.PUT_LINE('');
+    DBMS_OUTPUT.PUT_LINE('=== SPRINT 3 — CARGA COMPLEMENTAR: inicio ===');
+ 
+    -- ---------------------------------------------------------------- CLINICA
+    -- (Seção 2 já carregou 2; aqui completamos para 5)
+    PRC_INSERT_CLINICA(
+        'Clinica AnimalVida ABC', '11.222.333/0001-03',
+        'AnimalVida Servicos Veterinarios Ltda', 'Av. Industrial, 900',
+        'Santo Andre', 'SP', '09080-500',
+        '(11)3003-0003', 'contato@animalvida.com.br',
+        'admin@animalvida.com.br', '$2b$12$HASHCLINICA03');
+ 
+    PRC_INSERT_CLINICA(
+        'Clinica VidaPet Osasco', '22.333.444/0001-04',
+        'VidaPet Clinica Veterinaria Ltda', 'Rua Antonio Agu, 250',
+        'Osasco', 'SP', '06010-030',
+        '(11)3004-0004', 'contato@vidapet.com.br',
+        'admin@vidapet.com.br', '$2b$12$HASHCLINICA04');
+ 
+    PRC_INSERT_CLINICA(
+        'Clinica BemEstar Campinas', '33.444.555/0001-05',
+        'BemEstar Animal Ltda', 'Av. Norte-Sul, 1200',
+        'Campinas', 'SP', '13010-111',
+        '(19)3005-0005', 'contato@bemestar.com.br',
+        'admin@bemestar.com.br', '$2b$12$HASHCLINICA05');
+ 
+    -- ---------------------------------------------------------------- ESPECIE
+    -- (Seção 2 já carregou 3; aqui completamos para 5)
+    PRC_INSERT_ESPECIE('Coelho');
+    PRC_INSERT_ESPECIE('Reptil');
+ 
+    -- Resolução de chaves por chave de negócio (sem hard-code de ID)
+    SELECT ID_CLINICA INTO v_cli_01 FROM CLINICA WHERE NR_CNPJ = '12.345.678/0001-01';
+    SELECT ID_CLINICA INTO v_cli_02 FROM CLINICA WHERE NR_CNPJ = '98.765.432/0001-02';
+    SELECT ID_CLINICA INTO v_cli_03 FROM CLINICA WHERE NR_CNPJ = '11.222.333/0001-03';
+    SELECT ID_CLINICA INTO v_cli_04 FROM CLINICA WHERE NR_CNPJ = '22.333.444/0001-04';
+    SELECT ID_CLINICA INTO v_cli_05 FROM CLINICA WHERE NR_CNPJ = '33.444.555/0001-05';
+ 
+    SELECT ID_ESPECIE INTO v_esp_cao  FROM ESPECIE WHERE NM_ESPECIE = 'Cao';
+    SELECT ID_ESPECIE INTO v_esp_gato FROM ESPECIE WHERE NM_ESPECIE = 'Gato';
+    SELECT ID_ESPECIE INTO v_esp_coel FROM ESPECIE WHERE NM_ESPECIE = 'Coelho';
+ 
+    DBMS_OUTPUT.PUT_LINE('=== SPRINT 3 — Clinicas (5) e Especies (5) OK ===');
+ 
+    -- ------------------------------------------------------------------- RACA
+    INSERT INTO RACA (ID_RACA, ID_ESPECIE, NM_RACA, DS_PREDISPOSICAO)
+    VALUES (SEQ_RACA.NEXTVAL, v_esp_cao,  'Labrador Retriever', 'Displasia coxofemoral e obesidade');
+    INSERT INTO RACA (ID_RACA, ID_ESPECIE, NM_RACA, DS_PREDISPOSICAO)
+    VALUES (SEQ_RACA.NEXTVAL, v_esp_cao,  'Pastor Alemao',      'Displasia coxofemoral e mielopatia degenerativa');
+    INSERT INTO RACA (ID_RACA, ID_ESPECIE, NM_RACA, DS_PREDISPOSICAO)
+    VALUES (SEQ_RACA.NEXTVAL, v_esp_gato, 'Siames',             'Amiloidose hepatica e asma felina');
+    INSERT INTO RACA (ID_RACA, ID_ESPECIE, NM_RACA, DS_PREDISPOSICAO)
+    VALUES (SEQ_RACA.NEXTVAL, v_esp_gato, 'Persa',              'Doenca renal policistica');
+    INSERT INTO RACA (ID_RACA, ID_ESPECIE, NM_RACA, DS_PREDISPOSICAO)
+    VALUES (SEQ_RACA.NEXTVAL, v_esp_coel, 'Mini Lop',           'Ma oclusao dentaria');
+    COMMIT;
+ 
+    SELECT ID_RACA INTO v_raca_lab FROM RACA WHERE NM_RACA = 'Labrador Retriever' AND ID_ESPECIE = v_esp_cao;
+    SELECT ID_RACA INTO v_raca_sia FROM RACA WHERE NM_RACA = 'Siames'             AND ID_ESPECIE = v_esp_gato;
+    SELECT ID_RACA INTO v_raca_min FROM RACA WHERE NM_RACA = 'Mini Lop'           AND ID_ESPECIE = v_esp_coel;
+ 
+    -- ------------------------------------------------------------ VETERINARIO
+    -- (Seção 2 já carregou 3; aqui completamos para 5)
+    PRC_INSERT_VETERINARIO(v_cli_03, 'Dra. Renata Souza', 'SP-33445', 'renata@animalvida.com.br', '(11)99003-0001');
+    PRC_INSERT_VETERINARIO(v_cli_04, 'Dr. Paulo Tanaka',  'SP-55667', 'paulo@vidapet.com.br',     '(11)99004-0001');
+ 
+    -- ------------------------------------------------------------------ TUTOR
+    -- (Seção 2 já carregou 3; aqui completamos para 5)
+    PRC_INSERT_TUTOR(v_cli_03, 'Clayton Alves',   '45678901234', 'clayton@email.com',   '(11)98000-0004', '(11)98000-0004', 'Santo Andre', 'SP');
+    PRC_INSERT_TUTOR(v_cli_04, 'Guilherme Sola',  '56789012345', 'guilherme@email.com', '(11)98000-0005', '(11)98000-0005', 'Osasco',      'SP');
+ 
+    DBMS_OUTPUT.PUT_LINE('=== SPRINT 3 — Racas (5), Veterinarios (5) e Tutores (5) OK ===');
+ 
+    -- -------------------------------------------------------------------- PET
+    -- (Seção 2 já carregou 7; agora com raça preenchida e nas novas clínicas)
+    PRC_INSERT_PET(v_cli_03, v_esp_cao,  v_raca_lab, 'Nina',  DATE '2021-02-18', 'F', 'M');
+    PRC_INSERT_PET(v_cli_04, v_esp_gato, v_raca_sia, 'Simba', DATE '2019-08-09', 'M', 'P');
+    PRC_INSERT_PET(v_cli_05, v_esp_coel, v_raca_min, 'Pipoca',DATE '2023-01-05', 'F', 'P');
+ 
+    -- Resolução dos IDs necessários para os fatos
+    SELECT ID_VETERINARIO INTO v_vet_01 FROM VETERINARIO WHERE NR_CRMV = 'SP-12345';
+    SELECT ID_VETERINARIO INTO v_vet_02 FROM VETERINARIO WHERE NR_CRMV = 'SP-67890';
+    SELECT ID_VETERINARIO INTO v_vet_03 FROM VETERINARIO WHERE NR_CRMV = 'SP-11223';
+    SELECT ID_VETERINARIO INTO v_vet_04 FROM VETERINARIO WHERE NR_CRMV = 'SP-33445';
+    SELECT ID_VETERINARIO INTO v_vet_05 FROM VETERINARIO WHERE NR_CRMV = 'SP-55667';
+ 
+    SELECT ID_TUTOR INTO v_tut_01 FROM TUTOR WHERE NR_CPF = '12345678901';
+    SELECT ID_TUTOR INTO v_tut_04 FROM TUTOR WHERE NR_CPF = '45678901234';
+    SELECT ID_TUTOR INTO v_tut_05 FROM TUTOR WHERE NR_CPF = '56789012345';
+ 
+    SELECT MIN(ID_PET) INTO v_pet_thor FROM PET WHERE NM_PET = 'Thor';
+    SELECT MIN(ID_PET) INTO v_pet_mia  FROM PET WHERE NM_PET = 'Mia';
+    SELECT MIN(ID_PET) INTO v_pet_nina FROM PET WHERE NM_PET = 'Nina';
+ 
+    DBMS_OUTPUT.PUT_LINE('=== SPRINT 3 — Pets (10) OK ===');
+ 
+    -- ------------------------------------------------------------ AGENDAMENTO
+    -- Tabela de FATOS do Procedimento 2:
+    --   categórica 1 = ID_CLINICA | categórica 2 = ID_VETERINARIO
+    --   numérica    = NR_DURACAO_MINUTOS
+    -- Cada INSERT abaixo dispara a TRG_AUDIT_AGENDAMENTO (evidência de auditoria).
+    INSERT INTO AGENDAMENTO (ID_AGENDAMENTO, ID_CLINICA, ID_VETERINARIO, ID_TUTOR, ID_PET,
+        NM_PACIENTE, DS_SERVICO, DT_AGENDAMENTO, NR_DURACAO_MINUTOS, ST_STATUS, DS_TIPO, DT_CRIACAO)
+    VALUES (SEQ_AGENDAMENTO.NEXTVAL, v_cli_01, v_vet_01, v_tut_01, v_pet_thor,
+        'Thor', 'Check-up Preventivo', SYSTIMESTAMP - INTERVAL '10' DAY, 45, 'REALIZADO', 'CONSULTA', SYSTIMESTAMP);
+ 
+    INSERT INTO AGENDAMENTO (ID_AGENDAMENTO, ID_CLINICA, ID_VETERINARIO, ID_TUTOR, ID_PET,
+        NM_PACIENTE, DS_SERVICO, DT_AGENDAMENTO, NR_DURACAO_MINUTOS, ST_STATUS, DS_TIPO, DT_CRIACAO)
+    VALUES (SEQ_AGENDAMENTO.NEXTVAL, v_cli_01, v_vet_01, v_tut_01, v_pet_thor,
+        'Thor', 'Retorno Dermatologico', SYSTIMESTAMP - INTERVAL '4' DAY, 30, 'REALIZADO', 'CONSULTA', SYSTIMESTAMP);
+ 
+    INSERT INTO AGENDAMENTO (ID_AGENDAMENTO, ID_CLINICA, ID_VETERINARIO, ID_TUTOR, ID_PET,
+        NM_PACIENTE, DS_SERVICO, DT_AGENDAMENTO, NR_DURACAO_MINUTOS, ST_STATUS, DS_TIPO, DT_CRIACAO)
+    VALUES (SEQ_AGENDAMENTO.NEXTVAL, v_cli_01, v_vet_02, v_tut_01, v_pet_mia,
+        'Mia', 'Vacina Antirrabica', SYSTIMESTAMP - INTERVAL '2' DAY, 20, 'REALIZADO', 'VACINA', SYSTIMESTAMP);
+ 
+    INSERT INTO AGENDAMENTO (ID_AGENDAMENTO, ID_CLINICA, ID_VETERINARIO, ID_TUTOR, ID_PET,
+        NM_PACIENTE, DS_SERVICO, DT_AGENDAMENTO, NR_DURACAO_MINUTOS, ST_STATUS, DS_TIPO, DT_CRIACAO)
+    VALUES (SEQ_AGENDAMENTO.NEXTVAL, v_cli_01, v_vet_02, v_tut_01, v_pet_mia,
+        'Mia', 'Consulta Felina', SYSTIMESTAMP + INTERVAL '3' DAY, 40, 'CONFIRMADO', 'CONSULTA', SYSTIMESTAMP);
+ 
+    INSERT INTO AGENDAMENTO (ID_AGENDAMENTO, ID_CLINICA, ID_VETERINARIO,
+        NM_PACIENTE, DS_SERVICO, DT_AGENDAMENTO, NR_DURACAO_MINUTOS, ST_STATUS, DS_TIPO, DT_CRIACAO)
+    VALUES (SEQ_AGENDAMENTO.NEXTVAL, v_cli_02, v_vet_03,
+        'Rex', 'Exame de Imagem', SYSTIMESTAMP - INTERVAL '7' DAY, 60, 'REALIZADO', 'EXAME', SYSTIMESTAMP);
+ 
+    INSERT INTO AGENDAMENTO (ID_AGENDAMENTO, ID_CLINICA, ID_VETERINARIO,
+        NM_PACIENTE, DS_SERVICO, DT_AGENDAMENTO, NR_DURACAO_MINUTOS, ST_STATUS, DS_TIPO, DT_CRIACAO)
+    VALUES (SEQ_AGENDAMENTO.NEXTVAL, v_cli_02, v_vet_03,
+        'Buddy', 'Consulta Ortopedica', SYSTIMESTAMP + INTERVAL '5' DAY, 50, 'AGENDADO', 'CONSULTA', SYSTIMESTAMP);
+ 
+    INSERT INTO AGENDAMENTO (ID_AGENDAMENTO, ID_CLINICA, ID_VETERINARIO, ID_TUTOR, ID_PET,
+        NM_PACIENTE, DS_SERVICO, DT_AGENDAMENTO, NR_DURACAO_MINUTOS, ST_STATUS, DS_TIPO, DT_CRIACAO)
+    VALUES (SEQ_AGENDAMENTO.NEXTVAL, v_cli_03, v_vet_04, v_tut_04, v_pet_nina,
+        'Nina', 'Consulta Geral', SYSTIMESTAMP - INTERVAL '6' DAY, 35, 'REALIZADO', 'CONSULTA', SYSTIMESTAMP);
+ 
+    INSERT INTO AGENDAMENTO (ID_AGENDAMENTO, ID_CLINICA, ID_VETERINARIO, ID_TUTOR, ID_PET,
+        NM_PACIENTE, DS_SERVICO, DT_AGENDAMENTO, NR_DURACAO_MINUTOS, ST_STATUS, DS_TIPO, DT_CRIACAO)
+    VALUES (SEQ_AGENDAMENTO.NEXTVAL, v_cli_03, v_vet_04, v_tut_04, v_pet_nina,
+        'Nina', 'Vacina V10', SYSTIMESTAMP + INTERVAL '9' DAY, 25, 'AGENDADO', 'VACINA', SYSTIMESTAMP);
+ 
+    INSERT INTO AGENDAMENTO (ID_AGENDAMENTO, ID_CLINICA, ID_VETERINARIO, ID_TUTOR,
+        NM_PACIENTE, DS_SERVICO, DT_AGENDAMENTO, NR_DURACAO_MINUTOS, ST_STATUS, DS_TIPO, DT_CRIACAO)
+    VALUES (SEQ_AGENDAMENTO.NEXTVAL, v_cli_04, v_vet_05, v_tut_05,
+        'Simba', 'Teleorientacao Luna', SYSTIMESTAMP - INTERVAL '1' DAY, 15, 'REALIZADO', 'TELEORIENTACAO', SYSTIMESTAMP);
+ 
+    COMMIT;
+    DBMS_OUTPUT.PUT_LINE('=== SPRINT 3 — Agendamentos (fatos) OK — auditados pela trigger ===');
+    DBMS_OUTPUT.PUT_LINE('=== SPRINT 3 — CARGA COMPLEMENTAR: concluida ===');
+EXCEPTION
+    WHEN NO_DATA_FOUND THEN
+        ROLLBACK;
+        DBMS_OUTPUT.PUT_LINE('[ERRO CARGA S3] NO_DATA_FOUND: chave de negocio nao encontrada. '
+                             || 'Execute o arquivo desde o inicio em schema limpo. ' || SQLERRM);
+    WHEN OTHERS THEN
+        ROLLBACK;
+        DBMS_OUTPUT.PUT_LINE('[ERRO CARGA S3] OTHERS: ' || SQLERRM);
+END;
+/
+ 
+ 
+-- ============================================================================
+-- 6.4 — FUNÇÃO 1: FNC_JSON_PET (requisito S3.3)
+-- Recebe dados RELACIONAIS (uma linha do JOIN) e devolve uma STRING JSON.
+-- A conversão é 100% manual (concatenação + escape próprio).
+-- NÃO usa JSON_OBJECT, JSON_VALUE, JSON_QUERY, JSON_TABLE, TO_JSON ou similar.
+-- Exceções tratadas (3): e_campo_obrigatorio, VALUE_ERROR, OTHERS.
+-- Obs.: a função NÃO faz DML (para poder ser chamada também dentro de SELECT
+--       sem ORA-14551); o erro é sinalizado no retorno e via DBMS_OUTPUT.
+-- ============================================================================
+ 
+CREATE OR REPLACE FUNCTION FNC_JSON_PET (
+    p_id_pet         IN PET.ID_PET%TYPE,
+    p_nm_pet         IN PET.NM_PET%TYPE,
+    p_nm_especie     IN ESPECIE.NM_ESPECIE%TYPE,
+    p_nm_clinica     IN CLINICA.NM_CLINICA%TYPE,
+    p_dt_nascimento  IN PET.DT_NASCIMENTO%TYPE,
+    p_sg_sexo        IN PET.SG_SEXO%TYPE,
+    p_sg_porte       IN PET.SG_PORTE%TYPE,
+    p_st_ativo       IN PET.ST_ATIVO%TYPE
+) RETURN VARCHAR2
+IS
+    c_fn CONSTANT VARCHAR2(120) := 'FNC_JSON_PET';
+ 
+    e_campo_obrigatorio EXCEPTION;
+ 
+    v_json        VARCHAR2(4000);
+    v_idade_anos  NUMBER;
+ 
+    -- Escape manual dos caracteres reservados do JSON (RFC 8259)
+    FUNCTION escapar (p_texto IN VARCHAR2) RETURN VARCHAR2 IS
+        v_tmp VARCHAR2(4000);
+    BEGIN
+        IF p_texto IS NULL THEN
+            RETURN NULL;
+        END IF;
+        v_tmp := REPLACE(p_texto, '\', '\\');   -- barra invertida primeiro
+        v_tmp := REPLACE(v_tmp,   '"', '\"');   -- aspas duplas
+        v_tmp := REPLACE(v_tmp, CHR(13), ' ');  -- CR
+        v_tmp := REPLACE(v_tmp, CHR(10), ' ');  -- LF
+        v_tmp := REPLACE(v_tmp, CHR(9),  ' ');  -- TAB
+        RETURN v_tmp;
+    END escapar;
+ 
+    -- Monta um valor JSON textual: "valor" ou null (sem aspas)
+    FUNCTION valor_texto (p_valor IN VARCHAR2) RETURN VARCHAR2 IS
+    BEGIN
+        IF p_valor IS NULL THEN
+            RETURN 'null';
+        END IF;
+        RETURN '"' || escapar(p_valor) || '"';
+    END valor_texto;
+ 
+BEGIN
+    -- Regra de negócio: identidade do pet é obrigatória no documento JSON
+    IF p_id_pet IS NULL OR p_nm_pet IS NULL THEN
+        RAISE e_campo_obrigatorio;
+    END IF;
+ 
+    IF p_dt_nascimento IS NOT NULL THEN
+        v_idade_anos := TRUNC(MONTHS_BETWEEN(SYSDATE, p_dt_nascimento) / 12);
+    END IF;
+ 
+    v_json := '{'
+           ||  '"idPet":'      || TO_CHAR(p_id_pet)
+           || ',"nome":'       || valor_texto(p_nm_pet)
+           || ',"especie":'    || valor_texto(p_nm_especie)
+           || ',"clinica":'    || valor_texto(p_nm_clinica)
+           || ',"nascimento":' || valor_texto(TO_CHAR(p_dt_nascimento, 'YYYY-MM-DD'))
+           || ',"idadeAnos":'  || NVL(TO_CHAR(v_idade_anos), 'null')
+           || ',"sexo":'       || valor_texto(p_sg_sexo)
+           || ',"porte":'      || valor_texto(CASE p_sg_porte
+                                                 WHEN 'P' THEN 'PEQUENO'
+                                                 WHEN 'M' THEN 'MEDIO'
+                                                 WHEN 'G' THEN 'GRANDE'
+                                                 ELSE NULL
+                                             END)
+           || ',"ativo":'      || CASE WHEN p_st_ativo = 'S' THEN 'true' ELSE 'false' END
+           || '}';
+ 
+    RETURN v_json;
+EXCEPTION
+    -- Exceção 1 — regra de negócio violada (campo obrigatório ausente)
+    WHEN e_campo_obrigatorio THEN
+        DBMS_OUTPUT.PUT_LINE('[ERRO ' || c_fn || '] CAMPO_OBRIGATORIO: ID_PET e NM_PET nao podem ser nulos.');
+        RETURN '{"erro":"CAMPO_OBRIGATORIO","detalhe":"ID_PET/NM_PET nulos"}';
+    -- Exceção 2 — estouro de buffer ou conversão de tipo inválida
+    WHEN VALUE_ERROR THEN
+        DBMS_OUTPUT.PUT_LINE('[ERRO ' || c_fn || '] VALUE_ERROR: ' || SQLERRM);
+        RETURN '{"erro":"VALUE_ERROR","detalhe":"tamanho ou tipo invalido"}';
+    -- Exceção 3 — qualquer outra falha
+    WHEN OTHERS THEN
+        DBMS_OUTPUT.PUT_LINE('[ERRO ' || c_fn || '] OTHERS: ' || SQLERRM);
+        RETURN '{"erro":"OTHERS","detalhe":"' || SQLCODE || '"}';
+END FNC_JSON_PET;
+/
+ 
+ 
+-- ============================================================================
+-- 6.5 — FUNÇÃO 2: FNC_VALIDA_SENHA_TUTOR (requisito S3.4)
+-- Substitui uma regra de negócio que hoje vive no Backend Java: a política de
+-- senha do portal do tutor (CONTA_TUTOR.DS_SENHA_HASH). Centralizar no banco
+-- garante a mesma regra para .NET, Java e cargas administrativas.
+-- Retorna 'SENHA_VALIDA' ou 'SENHA_INVALIDA: <motivos>'.
+-- Exceções tratadas (3): e_senha_nula, VALUE_ERROR, OTHERS.
+-- ============================================================================
+ 
+CREATE OR REPLACE FUNCTION FNC_VALIDA_SENHA_TUTOR (
+    p_senha        IN VARCHAR2,
+    p_email_login  IN VARCHAR2 DEFAULT NULL
+) RETURN VARCHAR2
+IS
+    c_fn          CONSTANT VARCHAR2(120) := 'FNC_VALIDA_SENHA_TUTOR';
+    c_min_tam     CONSTANT PLS_INTEGER   := 8;
+    c_max_tam     CONSTANT PLS_INTEGER   := 64;
+ 
+    e_senha_nula  EXCEPTION;
+ 
+    v_motivos     VARCHAR2(500);
+    v_local_login VARCHAR2(120);
+    v_pos_arroba  PLS_INTEGER;
+BEGIN
+    IF p_senha IS NULL THEN
+        RAISE e_senha_nula;
+    END IF;
+ 
+    -- Regra 1 — tamanho mínimo
+    IF LENGTH(p_senha) < c_min_tam THEN
+        v_motivos := v_motivos || 'MIN_' || c_min_tam || '_CARACTERES;';
+    END IF;
+ 
+    -- Regra 2 — tamanho máximo (evita DoS no BCrypt)
+    IF LENGTH(p_senha) > c_max_tam THEN
+        v_motivos := v_motivos || 'MAX_' || c_max_tam || '_CARACTERES;';
+    END IF;
+ 
+    -- Regra 3 a 6 — composição mínima
+    IF NOT REGEXP_LIKE(p_senha, '[A-Z]')        THEN v_motivos := v_motivos || 'FALTA_MAIUSCULA;'; END IF;
+    IF NOT REGEXP_LIKE(p_senha, '[a-z]')        THEN v_motivos := v_motivos || 'FALTA_MINUSCULA;'; END IF;
+    IF NOT REGEXP_LIKE(p_senha, '[0-9]')        THEN v_motivos := v_motivos || 'FALTA_NUMERO;';    END IF;
+    IF NOT REGEXP_LIKE(p_senha, '[^A-Za-z0-9]') THEN v_motivos := v_motivos || 'FALTA_ESPECIAL;';  END IF;
+ 
+    -- Regra 7 — sem 3 caracteres iguais em sequência (ex.: 'aaa', '111')
+    IF REGEXP_LIKE(p_senha, '(.)\1\1') THEN
+        v_motivos := v_motivos || 'REPETICAO_3_IGUAIS;';
+    END IF;
+ 
+    -- Regra 8 — a senha não pode conter o próprio login
+    IF p_email_login IS NOT NULL THEN
+        v_pos_arroba := INSTR(p_email_login, '@');
+        IF v_pos_arroba > 1 THEN
+            v_local_login := SUBSTR(p_email_login, 1, v_pos_arroba - 1);
+            IF LENGTH(v_local_login) >= 3
+               AND INSTR(UPPER(p_senha), UPPER(v_local_login)) > 0 THEN
+                v_motivos := v_motivos || 'CONTEM_LOGIN;';
+            END IF;
+        END IF;
+    END IF;
+ 
+    IF v_motivos IS NULL THEN
+        RETURN 'SENHA_VALIDA';
+    END IF;
+ 
+    RETURN 'SENHA_INVALIDA: ' || RTRIM(v_motivos, ';');
+EXCEPTION
+    -- Exceção 1 — senha não informada
+    WHEN e_senha_nula THEN
+        DBMS_OUTPUT.PUT_LINE('[ERRO ' || c_fn || '] SENHA_NULA: parametro p_senha obrigatorio.');
+        RETURN 'SENHA_INVALIDA: SENHA_NULA';
+    -- Exceção 2 — estouro do buffer de motivos / conversão inválida
+    WHEN VALUE_ERROR THEN
+        DBMS_OUTPUT.PUT_LINE('[ERRO ' || c_fn || '] VALUE_ERROR: ' || SQLERRM);
+        RETURN 'SENHA_INVALIDA: VALUE_ERROR';
+    -- Exceção 3 — qualquer outra falha
+    WHEN OTHERS THEN
+        DBMS_OUTPUT.PUT_LINE('[ERRO ' || c_fn || '] OTHERS: ' || SQLERRM);
+        RETURN 'SENHA_INVALIDA: ERRO_INESPERADO';
+END FNC_VALIDA_SENHA_TUTOR;
+/
+ 
+ 
+-- ============================================================================
+-- 6.6 — PROCEDIMENTO 1: PRC_EXPORTA_PETS_JSON (requisito S3.1) — 30 pts
+-- JOIN entre 3 tabelas (PET + ESPECIE + CLINICA), todas com >= 5 registros.
+-- Cada linha do resultado relacional é convertida em JSON pela FNC_JSON_PET.
+-- Saída: array JSON impresso via DBMS_OUTPUT.
+-- Exceções tratadas (4): NO_DATA_FOUND, e_sem_dados, VALUE_ERROR, OTHERS.
+-- ============================================================================
+ 
+CREATE OR REPLACE PROCEDURE PRC_EXPORTA_PETS_JSON (
+    p_id_clinica IN CLINICA.ID_CLINICA%TYPE DEFAULT NULL
+) AS
+    c_proc CONSTANT VARCHAR2(120) := 'PRC_EXPORTA_PETS_JSON';
+    v_erro_cod        NUMBER;          -- captura de SQLCODE (uso proibido em SQL)
+    v_erro_msg        VARCHAR2(2000);  -- captura de SQLERRM (uso proibido em SQL)
+ 
+    CURSOR c_pets IS
+        SELECT p.ID_PET,
+               p.NM_PET,
+               e.NM_ESPECIE,
+               c.NM_CLINICA,
+               p.DT_NASCIMENTO,
+               p.SG_SEXO,
+               p.SG_PORTE,
+               p.ST_ATIVO
+        FROM   PET     p
+        JOIN   ESPECIE e ON e.ID_ESPECIE = p.ID_ESPECIE    -- JOIN 1
+        JOIN   CLINICA c ON c.ID_CLINICA = p.ID_CLINICA    -- JOIN 2
+        WHERE  p.ST_ATIVO = 'S'
+          AND  (p_id_clinica IS NULL OR c.ID_CLINICA = p_id_clinica)
+        ORDER BY c.NM_CLINICA, p.NM_PET;
+ 
+    r_pet        c_pets%ROWTYPE;
+    v_chk_cli    CLINICA.ID_CLINICA%TYPE;
+    v_json_linha VARCHAR2(4000);
+    v_pendente   VARCHAR2(4000);
+    v_qtd        NUMBER := 0;
+ 
+    e_sem_dados  EXCEPTION;
+BEGIN
+    -- Valida o filtro antes de abrir o cursor (dispara NO_DATA_FOUND)
+    IF p_id_clinica IS NOT NULL THEN
+        SELECT ID_CLINICA
+        INTO   v_chk_cli
+        FROM   CLINICA
+        WHERE  ID_CLINICA = p_id_clinica
+          AND  ST_ATIVA   = 'S';
+    END IF;
+ 
+    DBMS_OUTPUT.PUT_LINE('');
+    DBMS_OUTPUT.PUT_LINE('================================================================');
+    DBMS_OUTPUT.PUT_LINE(' PROCEDIMENTO 1 — EXPORTACAO RELACIONAL -> JSON');
+    DBMS_OUTPUT.PUT_LINE(' JOIN: PET + ESPECIE + CLINICA | Conversao: FNC_JSON_PET');
+    DBMS_OUTPUT.PUT_LINE(' Filtro ID_CLINICA: ' || NVL(TO_CHAR(p_id_clinica), 'TODAS'));
+    DBMS_OUTPUT.PUT_LINE('================================================================');
+    DBMS_OUTPUT.PUT_LINE('[');
+ 
+    OPEN c_pets;
+    LOOP
+        FETCH c_pets INTO r_pet;
+        EXIT WHEN c_pets%NOTFOUND;
+ 
+        v_json_linha := FNC_JSON_PET(
+            p_id_pet        => r_pet.ID_PET,
+            p_nm_pet        => r_pet.NM_PET,
+            p_nm_especie    => r_pet.NM_ESPECIE,
+            p_nm_clinica    => r_pet.NM_CLINICA,
+            p_dt_nascimento => r_pet.DT_NASCIMENTO,
+            p_sg_sexo       => r_pet.SG_SEXO,
+            p_sg_porte      => r_pet.SG_PORTE,
+            p_st_ativo      => r_pet.ST_ATIVO
+        );
+ 
+        -- Imprime a linha anterior com vírgula; a última sai sem vírgula
+        IF v_pendente IS NOT NULL THEN
+            DBMS_OUTPUT.PUT_LINE('  ' || v_pendente || ',');
+        END IF;
+ 
+        v_pendente := v_json_linha;
+        v_qtd      := v_qtd + 1;
+    END LOOP;
+    CLOSE c_pets;
+ 
+    IF v_pendente IS NOT NULL THEN
+        DBMS_OUTPUT.PUT_LINE('  ' || v_pendente);
+    END IF;
+ 
+    DBMS_OUTPUT.PUT_LINE(']');
+    DBMS_OUTPUT.PUT_LINE('Total de documentos JSON gerados: ' || v_qtd);
+    DBMS_OUTPUT.PUT_LINE('');
+ 
+    IF v_qtd = 0 THEN
+        RAISE e_sem_dados;
+    END IF;
+EXCEPTION
+    -- Exceção 1 — clínica informada não existe ou está inativa
+    WHEN NO_DATA_FOUND THEN
+        v_erro_cod := SQLCODE;   -- capturado ANTES de qualquer SQL
+        v_erro_msg := SQLERRM;
+        INSERT INTO LOG_ERRO (ID_LOG, NM_PROCEDURE, NM_USUARIO, DT_ERRO,
+                              NR_CODIGO_ERRO, DS_MENSAGEM_ERRO, DS_PARAMETROS)
+        VALUES (SEQ_LOG_ERRO.NEXTVAL, c_proc, USER, SYSTIMESTAMP,
+                v_erro_cod, 'NO_DATA_FOUND: Clinica inexistente ou inativa. ' || v_erro_msg,
+                'p_id_clinica=' || NVL(TO_CHAR(p_id_clinica), 'null'));
+        COMMIT;
+        DBMS_OUTPUT.PUT_LINE('[ERRO ' || c_proc || '] Clinica nao encontrada — log gravado em LOG_ERRO.');
+    -- Exceção 2 — JOIN não retornou nenhuma linha
+    WHEN e_sem_dados THEN
+        v_erro_cod := SQLCODE;   -- capturado ANTES de qualquer SQL
+        v_erro_msg := SQLERRM;
+        INSERT INTO LOG_ERRO (ID_LOG, NM_PROCEDURE, NM_USUARIO, DT_ERRO,
+                              NR_CODIGO_ERRO, DS_MENSAGEM_ERRO, DS_PARAMETROS)
+        VALUES (SEQ_LOG_ERRO.NEXTVAL, c_proc, USER, SYSTIMESTAMP,
+                -20001, 'SEM_DADOS: nenhum pet ativo encontrado para o filtro informado.',
+                'p_id_clinica=' || NVL(TO_CHAR(p_id_clinica), 'null'));
+        COMMIT;
+        DBMS_OUTPUT.PUT_LINE('[ERRO ' || c_proc || '] Nenhum pet retornado — log gravado em LOG_ERRO.');
+    -- Exceção 3 — estouro de buffer na montagem do JSON
+    WHEN VALUE_ERROR THEN
+        v_erro_cod := SQLCODE;   -- capturado ANTES de qualquer SQL
+        v_erro_msg := SQLERRM;
+        INSERT INTO LOG_ERRO (ID_LOG, NM_PROCEDURE, NM_USUARIO, DT_ERRO,
+                              NR_CODIGO_ERRO, DS_MENSAGEM_ERRO, DS_PARAMETROS)
+        VALUES (SEQ_LOG_ERRO.NEXTVAL, c_proc, USER, SYSTIMESTAMP,
+                -6502, 'VALUE_ERROR: documento JSON excedeu o buffer. ' || v_erro_msg,
+                'p_id_clinica=' || NVL(TO_CHAR(p_id_clinica), 'null'));
+        COMMIT;
+        DBMS_OUTPUT.PUT_LINE('[ERRO ' || c_proc || '] Buffer excedido — log gravado em LOG_ERRO.');
+    -- Exceção 4 — qualquer outra falha
+    WHEN OTHERS THEN
+        v_erro_cod := SQLCODE;   -- capturado ANTES de qualquer SQL
+        v_erro_msg := SQLERRM;
+        INSERT INTO LOG_ERRO (ID_LOG, NM_PROCEDURE, NM_USUARIO, DT_ERRO,
+                              NR_CODIGO_ERRO, DS_MENSAGEM_ERRO, DS_PARAMETROS)
+        VALUES (SEQ_LOG_ERRO.NEXTVAL, c_proc, USER, SYSTIMESTAMP,
+                v_erro_cod, 'OTHERS: ' || v_erro_msg,
+                'p_id_clinica=' || NVL(TO_CHAR(p_id_clinica), 'null'));
+        COMMIT;
+        DBMS_OUTPUT.PUT_LINE('[ERRO ' || c_proc || '] Erro inesperado — log gravado em LOG_ERRO.');
+END PRC_EXPORTA_PETS_JSON;
+/
+ 
+ 
+-- ============================================================================
+-- 6.7 — PROCEDIMENTO 2: PRC_TOTALIZA_AGENDA_MINUTOS (requisito S3.2) — 30 pts
+-- Tabela de FATOS: AGENDAMENTO
+--   categórica 1 = ID_CLINICA (equivale a "agencia" do enunciado)
+--   categórica 2 = ID_VETERINARIO (equivale a "conta")
+--   numérica     = NR_DURACAO_MINUTOS (equivale a "saldo")
+--
+-- O cursor lê SOMENTE LINHAS DETALHADAS (sem GROUP BY, sem SUM, sem ROLLUP,
+-- sem CUBE, sem GROUPING SETS). Todo o somatório é feito manualmente no corpo
+-- do procedimento, por quebra de grupo:
+--   linha por combinação (clinica, veterinario)
+--   -> SUB-TOTAL por clínica (1ª categoria) com as categorias NULAS
+--   -> TOTAL GERAL ao final, também com as categorias NULAS
+-- Exceções tratadas (4): e_sem_fatos, ZERO_DIVIDE, VALUE_ERROR, OTHERS.
+-- ============================================================================
+ 
+CREATE OR REPLACE PROCEDURE PRC_TOTALIZA_AGENDA_MINUTOS (
+    p_dias_retroativos IN NUMBER DEFAULT 3650
+) AS
+    c_proc CONSTANT VARCHAR2(120) := 'PRC_TOTALIZA_AGENDA_MINUTOS';
+    v_erro_cod        NUMBER;          -- captura de SQLCODE (uso proibido em SQL)
+    v_erro_msg        VARCHAR2(2000);  -- captura de SQLERRM (uso proibido em SQL)
+ 
+    -- Somente linhas detalhadas — nenhuma agregação delegada ao Oracle
+    CURSOR c_fatos IS
+        SELECT a.ID_CLINICA,
+               a.ID_VETERINARIO,
+               NVL(a.NR_DURACAO_MINUTOS, 0) AS VL_MINUTOS
+        FROM   AGENDAMENTO a
+        WHERE  a.ID_VETERINARIO IS NOT NULL
+          AND  a.DT_AGENDAMENTO >= CAST(SYSTIMESTAMP AS DATE) - p_dias_retroativos
+        ORDER BY a.ID_CLINICA, a.ID_VETERINARIO;
+ 
+    r_fato          c_fatos%ROWTYPE;
+ 
+    v_cli_ant       AGENDAMENTO.ID_CLINICA%TYPE;
+    v_vet_ant       AGENDAMENTO.ID_VETERINARIO%TYPE;
+ 
+    v_soma_comb     NUMBER := 0;   -- acumulador da combinação (clinica, vet)
+    v_qtd_comb      NUMBER := 0;
+    v_soma_cli      NUMBER := 0;   -- acumulador do sub-total da clínica
+    v_qtd_cli       NUMBER := 0;
+    v_soma_geral    NUMBER := 0;   -- acumulador do total geral
+    v_qtd_geral     NUMBER := 0;
+ 
+    v_primeira      BOOLEAN := TRUE;
+ 
+    e_sem_fatos     EXCEPTION;
+ 
+    -- ---- rotinas de impressão (quebra de grupo) ----------------------------
+    PROCEDURE imprime_combinacao IS
+        v_media NUMBER;
+    BEGIN
+        IF v_qtd_comb = 0 THEN
+            RETURN;                                   -- protege contra ZERO_DIVIDE
+        END IF;
+        v_media := ROUND(v_soma_comb / v_qtd_comb, 2);
+        DBMS_OUTPUT.PUT_LINE(
+               LPAD(TO_CHAR(v_cli_ant),  10)
+            || LPAD(TO_CHAR(v_vet_ant),  10)
+            || LPAD(TO_CHAR(v_qtd_comb),  8)
+            || LPAD(TO_CHAR(v_soma_comb), 12)
+            || LPAD(TO_CHAR(v_media, 'FM99990.00'), 10)
+        );
+    END imprime_combinacao;
+ 
+    PROCEDURE imprime_subtotal IS
+        v_media NUMBER;
+    BEGIN
+        IF v_qtd_cli = 0 THEN
+            RETURN;
+        END IF;
+        v_media := ROUND(v_soma_cli / v_qtd_cli, 2);
+        -- Categorias (clinica, veterinario) NULAS na linha de sub-total
+        DBMS_OUTPUT.PUT_LINE(
+               RPAD('  Sub Total', 20)
+            || LPAD(TO_CHAR(v_qtd_cli),  8)
+            || LPAD(TO_CHAR(v_soma_cli), 12)
+            || LPAD(TO_CHAR(v_media, 'FM99990.00'), 10)
+        );
+        DBMS_OUTPUT.PUT_LINE(RPAD('-', 60, '-'));
+    END imprime_subtotal;
+ 
+    PROCEDURE imprime_total_geral IS
+        v_media NUMBER;
+    BEGIN
+        IF v_qtd_geral = 0 THEN
+            RETURN;
+        END IF;
+        v_media := ROUND(v_soma_geral / v_qtd_geral, 2);
+        -- Categorias NULAS também na linha de total geral
+        DBMS_OUTPUT.PUT_LINE(
+               RPAD('  Total Geral', 20)
+            || LPAD(TO_CHAR(v_qtd_geral),  8)
+            || LPAD(TO_CHAR(v_soma_geral), 12)
+            || LPAD(TO_CHAR(v_media, 'FM99990.00'), 10)
+        );
+    END imprime_total_geral;
+ 
+BEGIN
+    DBMS_OUTPUT.PUT_LINE('');
+    DBMS_OUTPUT.PUT_LINE('================================================================');
+    DBMS_OUTPUT.PUT_LINE(' PROCEDIMENTO 2 — TOTALIZACAO MANUAL DA AGENDA (MINUTOS)');
+    DBMS_OUTPUT.PUT_LINE(' Fatos: AGENDAMENTO | Categorias: CLINICA > VETERINARIO');
+    DBMS_OUTPUT.PUT_LINE(' Medida: NR_DURACAO_MINUTOS | Janela: ultimos '
+                         || TO_CHAR(p_dias_retroativos) || ' dia(s)');
+    DBMS_OUTPUT.PUT_LINE(' Somatorio manual — sem funcoes de agregacao automatica');
+    DBMS_OUTPUT.PUT_LINE('================================================================');
+    DBMS_OUTPUT.PUT_LINE(
+           LPAD('CLINICA', 10) || LPAD('VET', 10) || LPAD('QTD', 8)
+        || LPAD('MINUTOS', 12) || LPAD('MEDIA', 10)
+    );
+    DBMS_OUTPUT.PUT_LINE(RPAD('-', 60, '-'));
+ 
+    OPEN c_fatos;
+    LOOP
+        FETCH c_fatos INTO r_fato;
+        EXIT WHEN c_fatos%NOTFOUND;
+ 
+        -- Inicializa as chaves de controle na primeira linha
+        IF v_primeira THEN
+            v_cli_ant  := r_fato.ID_CLINICA;
+            v_vet_ant  := r_fato.ID_VETERINARIO;
+            v_primeira := FALSE;
+        END IF;
+ 
+        -- Quebra de grupo
+        IF r_fato.ID_CLINICA != v_cli_ant OR r_fato.ID_VETERINARIO != v_vet_ant THEN
+            imprime_combinacao;                       -- fecha a combinação atual
+            v_soma_comb := 0;
+            v_qtd_comb  := 0;
+ 
+            IF r_fato.ID_CLINICA != v_cli_ant THEN
+                imprime_subtotal;                     -- fecha a clínica (1ª categoria)
+                v_soma_cli := 0;
+                v_qtd_cli  := 0;
+            END IF;
+ 
+            v_cli_ant := r_fato.ID_CLINICA;
+            v_vet_ant := r_fato.ID_VETERINARIO;
+        END IF;
+ 
+        -- Somatórios manuais nos três níveis
+        v_soma_comb  := v_soma_comb  + r_fato.VL_MINUTOS;
+        v_qtd_comb   := v_qtd_comb   + 1;
+        v_soma_cli   := v_soma_cli   + r_fato.VL_MINUTOS;
+        v_qtd_cli    := v_qtd_cli    + 1;
+        v_soma_geral := v_soma_geral + r_fato.VL_MINUTOS;
+        v_qtd_geral  := v_qtd_geral  + 1;
+    END LOOP;
+    CLOSE c_fatos;
+ 
+    IF v_qtd_geral = 0 THEN
+        RAISE e_sem_fatos;
+    END IF;
+ 
+    -- Fecha os últimos grupos abertos
+    imprime_combinacao;
+    imprime_subtotal;
+    imprime_total_geral;
+    DBMS_OUTPUT.PUT_LINE(RPAD('=', 60, '='));
+    DBMS_OUTPUT.PUT_LINE('');
+EXCEPTION
+    -- Exceção 1 — janela de tempo sem nenhum fato
+    WHEN e_sem_fatos THEN
+        v_erro_cod := SQLCODE;   -- capturado ANTES de qualquer SQL
+        v_erro_msg := SQLERRM;
+        INSERT INTO LOG_ERRO (ID_LOG, NM_PROCEDURE, NM_USUARIO, DT_ERRO,
+                              NR_CODIGO_ERRO, DS_MENSAGEM_ERRO, DS_PARAMETROS)
+        VALUES (SEQ_LOG_ERRO.NEXTVAL, c_proc, USER, SYSTIMESTAMP,
+                -20002, 'SEM_FATOS: nenhum agendamento na janela informada.',
+                'p_dias_retroativos=' || NVL(TO_CHAR(p_dias_retroativos), 'null'));
+        COMMIT;
+        DBMS_OUTPUT.PUT_LINE('[ERRO ' || c_proc || '] Nenhum fato na janela — log gravado em LOG_ERRO.');
+    -- Exceção 2 — divisão por zero no cálculo das médias
+    WHEN ZERO_DIVIDE THEN
+        v_erro_cod := SQLCODE;   -- capturado ANTES de qualquer SQL
+        v_erro_msg := SQLERRM;
+        INSERT INTO LOG_ERRO (ID_LOG, NM_PROCEDURE, NM_USUARIO, DT_ERRO,
+                              NR_CODIGO_ERRO, DS_MENSAGEM_ERRO, DS_PARAMETROS)
+        VALUES (SEQ_LOG_ERRO.NEXTVAL, c_proc, USER, SYSTIMESTAMP,
+                v_erro_cod, 'ZERO_DIVIDE: divisao por zero no calculo da media. ' || v_erro_msg,
+                'p_dias_retroativos=' || NVL(TO_CHAR(p_dias_retroativos), 'null'));
+        COMMIT;
+        DBMS_OUTPUT.PUT_LINE('[ERRO ' || c_proc || '] Divisao por zero — log gravado em LOG_ERRO.');
+    -- Exceção 3 — conversão/estouro numérico na formatação
+    WHEN VALUE_ERROR THEN
+        v_erro_cod := SQLCODE;   -- capturado ANTES de qualquer SQL
+        v_erro_msg := SQLERRM;
+        INSERT INTO LOG_ERRO (ID_LOG, NM_PROCEDURE, NM_USUARIO, DT_ERRO,
+                              NR_CODIGO_ERRO, DS_MENSAGEM_ERRO, DS_PARAMETROS)
+        VALUES (SEQ_LOG_ERRO.NEXTVAL, c_proc, USER, SYSTIMESTAMP,
+                -6502, 'VALUE_ERROR: falha de conversao na formatacao do relatorio. ' || v_erro_msg,
+                'p_dias_retroativos=' || NVL(TO_CHAR(p_dias_retroativos), 'null'));
+        COMMIT;
+        DBMS_OUTPUT.PUT_LINE('[ERRO ' || c_proc || '] Falha de conversao — log gravado em LOG_ERRO.');
+    -- Exceção 4 — qualquer outra falha
+    WHEN OTHERS THEN
+        v_erro_cod := SQLCODE;   -- capturado ANTES de qualquer SQL
+        v_erro_msg := SQLERRM;
+        INSERT INTO LOG_ERRO (ID_LOG, NM_PROCEDURE, NM_USUARIO, DT_ERRO,
+                              NR_CODIGO_ERRO, DS_MENSAGEM_ERRO, DS_PARAMETROS)
+        VALUES (SEQ_LOG_ERRO.NEXTVAL, c_proc, USER, SYSTIMESTAMP,
+                v_erro_cod, 'OTHERS: ' || v_erro_msg,
+                'p_dias_retroativos=' || NVL(TO_CHAR(p_dias_retroativos), 'null'));
+        COMMIT;
+        DBMS_OUTPUT.PUT_LINE('[ERRO ' || c_proc || '] Erro inesperado — log gravado em LOG_ERRO.');
+END PRC_TOTALIZA_AGENDA_MINUTOS;
+/
+ 
+ 
+-- ============================================================================
+-- 6.8 — EXECUÇÃO DEMONSTRATIVA (evidências para os prints do PDF)
+-- Cada bloco abaixo gera uma tela do relatório exigido pela Sprint 3.
+-- ============================================================================
+ 
+-- ----------------------------------------------------------------------------
+-- 6.8.1 — Procedimento 1: caminho feliz (todas as clínicas)
+-- ----------------------------------------------------------------------------
+BEGIN
+    PRC_EXPORTA_PETS_JSON;
+END;
+/
+ 
+-- ----------------------------------------------------------------------------
+-- 6.8.2 — Procedimento 1: caminho feliz filtrado por clínica
+-- ----------------------------------------------------------------------------
+DECLARE
+    v_id_clinica CLINICA.ID_CLINICA%TYPE;
+BEGIN
+    SELECT ID_CLINICA INTO v_id_clinica FROM CLINICA WHERE NR_CNPJ = '12.345.678/0001-01';
+    PRC_EXPORTA_PETS_JSON(p_id_clinica => v_id_clinica);
+END;
+/
+ 
+-- ----------------------------------------------------------------------------
+-- 6.8.3 — Procedimento 1: EXCEÇÃO NO_DATA_FOUND (clínica inexistente)
+--         Evidência exigida: "print de exceção tratada em execução".
+-- ----------------------------------------------------------------------------
+BEGIN
+    DBMS_OUTPUT.PUT_LINE('');
+    DBMS_OUTPUT.PUT_LINE('>>> TESTE DE EXCECAO — PRC_EXPORTA_PETS_JSON(999999)');
+    PRC_EXPORTA_PETS_JSON(p_id_clinica => 999999);
+END;
+/
+ 
+-- ----------------------------------------------------------------------------
+-- 6.8.4 — Função 2: bateria de validação de senha (caminho feliz + exceção)
+-- ----------------------------------------------------------------------------
+BEGIN
+    DBMS_OUTPUT.PUT_LINE('');
+    DBMS_OUTPUT.PUT_LINE('================================================================');
+    DBMS_OUTPUT.PUT_LINE(' FUNCAO 2 — FNC_VALIDA_SENHA_TUTOR (politica de senha do portal)');
+    DBMS_OUTPUT.PUT_LINE('================================================================');
+    DBMS_OUTPUT.PUT_LINE(RPAD('Kura#2026vet', 20) || ' -> ' || FNC_VALIDA_SENHA_TUTOR('Kura#2026vet'));
+    DBMS_OUTPUT.PUT_LINE(RPAD('senha', 20)        || ' -> ' || FNC_VALIDA_SENHA_TUTOR('senha'));
+    DBMS_OUTPUT.PUT_LINE(RPAD('SENHAFORTE123', 20)|| ' -> ' || FNC_VALIDA_SENHA_TUTOR('SENHAFORTE123'));
+    DBMS_OUTPUT.PUT_LINE(RPAD('Aaa#111bbb', 20)   || ' -> ' || FNC_VALIDA_SENHA_TUTOR('Aaa#111bbb'));
+    DBMS_OUTPUT.PUT_LINE(RPAD('Felipe@2026!', 20) || ' -> ' || FNC_VALIDA_SENHA_TUTOR('Felipe@2026!', 'felipe@email.com'));
+    DBMS_OUTPUT.PUT_LINE('>>> TESTE DE EXCECAO — senha NULL:');
+    DBMS_OUTPUT.PUT_LINE(RPAD('(null)', 20)       || ' -> ' || FNC_VALIDA_SENHA_TUTOR(NULL));
+    DBMS_OUTPUT.PUT_LINE('');
+END;
+/
+ 
+-- ----------------------------------------------------------------------------
+-- 6.8.5 — Função 1: EXCEÇÃO CAMPO_OBRIGATORIO (chamada direta)
+-- ----------------------------------------------------------------------------
+BEGIN
+    DBMS_OUTPUT.PUT_LINE('>>> TESTE DE EXCECAO — FNC_JSON_PET com NM_PET nulo:');
+    DBMS_OUTPUT.PUT_LINE(FNC_JSON_PET(1, NULL, 'Cao', 'Clinica X', SYSDATE, 'M', 'G', 'S'));
+    DBMS_OUTPUT.PUT_LINE('');
+END;
+/
+ 
+-- ----------------------------------------------------------------------------
+-- 6.8.6 — Procedimento 2: caminho feliz (sub-totais + total geral)
+-- ----------------------------------------------------------------------------
+BEGIN
+    PRC_TOTALIZA_AGENDA_MINUTOS;
+END;
+/
+ 
+-- ----------------------------------------------------------------------------
+-- 6.8.7 — Procedimento 2: EXCEÇÃO SEM_FATOS (janela vazia)
+-- ----------------------------------------------------------------------------
+BEGIN
+    DBMS_OUTPUT.PUT_LINE('>>> TESTE DE EXCECAO — PRC_TOTALIZA_AGENDA_MINUTOS(-30)');
+    PRC_TOTALIZA_AGENDA_MINUTOS(p_dias_retroativos => -30);
+END;
+/
+ 
+ 
+-- ============================================================================
+-- 6.9 — DEMONSTRAÇÃO DA TRIGGER DE AUDITORIA
+-- Executa um ciclo completo INSERT -> UPDATE -> DELETE em AGENDAMENTO e depois
+-- lista a trilha gravada automaticamente pela TRG_AUDIT_AGENDAMENTO.
+-- ============================================================================
+ 
+DECLARE
+    v_id_agend   AGENDAMENTO.ID_AGENDAMENTO%TYPE;
+    v_id_clinica CLINICA.ID_CLINICA%TYPE;
+    v_id_vet     VETERINARIO.ID_VETERINARIO%TYPE;
+BEGIN
+    SELECT ID_CLINICA     INTO v_id_clinica FROM CLINICA     WHERE NR_CNPJ  = '12.345.678/0001-01';
+    SELECT ID_VETERINARIO INTO v_id_vet     FROM VETERINARIO WHERE NR_CRMV  = 'SP-12345';
+ 
+    DBMS_OUTPUT.PUT_LINE('');
+    DBMS_OUTPUT.PUT_LINE('>>> CICLO DML AUDITADO — INSERT / UPDATE / DELETE em AGENDAMENTO');
+ 
+    -- INSERT (auditado)
+    INSERT INTO AGENDAMENTO (ID_AGENDAMENTO, ID_CLINICA, ID_VETERINARIO,
+        NM_PACIENTE, DS_SERVICO, DT_AGENDAMENTO, NR_DURACAO_MINUTOS, ST_STATUS, DS_TIPO, DT_CRIACAO)
+    VALUES (SEQ_AGENDAMENTO.NEXTVAL, v_id_clinica, v_id_vet,
+        'Pet Auditoria', 'Consulta de Teste', SYSTIMESTAMP + INTERVAL '7' DAY, 30,
+        'AGENDADO', 'CONSULTA', SYSTIMESTAMP)
+    RETURNING ID_AGENDAMENTO INTO v_id_agend;
+ 
+    -- UPDATE (auditado: guarda :OLD e :NEW)
+    UPDATE AGENDAMENTO
+    SET    ST_STATUS          = 'CONFIRMADO',
+           NR_DURACAO_MINUTOS = 45,
+           DT_CONFIRMACAO     = SYSTIMESTAMP
+    WHERE  ID_AGENDAMENTO = v_id_agend;
+ 
+    -- DELETE (auditado: guarda apenas :OLD)
+    DELETE FROM AGENDAMENTO
+    WHERE  ID_AGENDAMENTO = v_id_agend;
+ 
+    COMMIT;
+    DBMS_OUTPUT.PUT_LINE('[OK] Ciclo concluido no agendamento de teste ID=' || v_id_agend);
+EXCEPTION
+    WHEN OTHERS THEN
+        ROLLBACK;
+        DBMS_OUTPUT.PUT_LINE('[ERRO DEMO TRIGGER] ' || SQLERRM);
+END;
+/
+ 
+-- ----------------------------------------------------------------------------
+-- 6.9.1 — Relatório da trilha de auditoria (cursor explícito)
+-- ----------------------------------------------------------------------------
+DECLARE
+    CURSOR c_audit IS
+        SELECT ID_AUDITORIA, NM_USUARIO, DS_OPERACAO,
+               TO_CHAR(DT_OPERACAO, 'DD/MM/YYYY HH24:MI:SS') AS DT_FMT,
+               ID_AGENDAMENTO, DS_VALORES_ANTERIORES, DS_VALORES_NOVOS
+        FROM   AUDITORIA_AGENDAMENTO
+        ORDER BY ID_AUDITORIA;
+ 
+    r_audit  c_audit%ROWTYPE;
+    v_total  NUMBER := 0;
+BEGIN
+    DBMS_OUTPUT.PUT_LINE('');
+    DBMS_OUTPUT.PUT_LINE('================================================================');
+    DBMS_OUTPUT.PUT_LINE(' TRILHA DE AUDITORIA — AUDITORIA_AGENDAMENTO (TRG_AUDIT_AGENDAMENTO)');
+    DBMS_OUTPUT.PUT_LINE('================================================================');
+ 
+    OPEN c_audit;
+    LOOP
+        FETCH c_audit INTO r_audit;
+        EXIT WHEN c_audit%NOTFOUND;
+ 
+        DBMS_OUTPUT.PUT_LINE(
+               '#' || RPAD(TO_CHAR(r_audit.ID_AUDITORIA), 5)
+            || RPAD(r_audit.DS_OPERACAO, 9)
+            || RPAD(r_audit.DT_FMT, 22)
+            || 'USUARIO=' || RPAD(r_audit.NM_USUARIO, 18)
+            || 'ID_AGEND=' || NVL(TO_CHAR(r_audit.ID_AGENDAMENTO), 'null')
+        );
+        DBMS_OUTPUT.PUT_LINE('     OLD: ' || NVL(SUBSTR(r_audit.DS_VALORES_ANTERIORES, 1, 200), '(vazio)'));
+        DBMS_OUTPUT.PUT_LINE('     NEW: ' || NVL(SUBSTR(r_audit.DS_VALORES_NOVOS,      1, 200), '(vazio)'));
+ 
+        v_total := v_total + 1;
+    END LOOP;
+    CLOSE c_audit;
+ 
+    DBMS_OUTPUT.PUT_LINE(RPAD('=', 64, '='));
+    DBMS_OUTPUT.PUT_LINE('Total de operacoes auditadas: ' || v_total);
+    DBMS_OUTPUT.PUT_LINE('');
+END;
+/
+ 
+-- ----------------------------------------------------------------------------
+-- 6.9.2 — Relatório das exceções tratadas (evidência de EXCEPTION WHEN)
+-- ----------------------------------------------------------------------------
+DECLARE
+    CURSOR c_log IS
+        SELECT NM_PROCEDURE, NM_USUARIO,
+               TO_CHAR(DT_ERRO, 'DD/MM/YYYY HH24:MI:SS') AS DT_FMT,
+               NR_CODIGO_ERRO, DS_MENSAGEM_ERRO, DS_PARAMETROS
+        FROM   LOG_ERRO
+        ORDER BY ID_LOG;
+ 
+    r_log    c_log%ROWTYPE;
+    v_total  NUMBER := 0;
+BEGIN
+    DBMS_OUTPUT.PUT_LINE('');
+    DBMS_OUTPUT.PUT_LINE('================================================================');
+    DBMS_OUTPUT.PUT_LINE(' LOG_ERRO — EXCECOES TRATADAS DURANTE A EXECUCAO');
+    DBMS_OUTPUT.PUT_LINE('================================================================');
+ 
+    OPEN c_log;
+    LOOP
+        FETCH c_log INTO r_log;
+        EXIT WHEN c_log%NOTFOUND;
+ 
+        DBMS_OUTPUT.PUT_LINE(
+               RPAD(r_log.NM_PROCEDURE, 30)
+            || RPAD(r_log.DT_FMT, 22)
+            || 'SQLCODE=' || TO_CHAR(r_log.NR_CODIGO_ERRO)
+        );
+        DBMS_OUTPUT.PUT_LINE('     MSG   : ' || SUBSTR(r_log.DS_MENSAGEM_ERRO, 1, 200));
+        DBMS_OUTPUT.PUT_LINE('     PARAMS: ' || NVL(SUBSTR(r_log.DS_PARAMETROS, 1, 200), '(vazio)'));
+ 
+        v_total := v_total + 1;
+    END LOOP;
+    CLOSE c_log;
+    
+    DBMS_OUTPUT.PUT_LINE(RPAD('=', 64, '='));
+    DBMS_OUTPUT.PUT_LINE('Total de excecoes registradas: ' || v_total);
+    DBMS_OUTPUT.PUT_LINE('');
+END;
+/
+
+
+
+-- BATERIA DE TESTES — SPRINT 3 · PROJETO KURA (CLYVO VET)
+-- Mastering Relational and Non-Relational Database — FIAP 2TDS
+-- ----------------------------------------------------------------------------
+-- OBJETIVO
+--   Validar, requisito a requisito, tudo o que a Sprint 3 exige. Cada teste
+--   responde a uma pergunta que o corretor fara ao avaliar o trabalho.
+--
+-- COMO USAR
+--   1. Execute o kura_schema_final_entrega.sql completo (Secoes 1 a 6) ANTES.
+--   2. Rode este arquivo com SET SERVEROUTPUT ON ligado.
+--   3. Compare cada saida com o bloco "ESPERADO" descrito no comentario.
+--
+-- IMPORTANTE
+--   Este arquivo e SOMENTE DE VERIFICACAO. Os unicos comandos que alteram
+--   dados sao os do TESTE 6 (ciclo INSERT/UPDATE/DELETE da trigger), que
+--   criam e removem o proprio registro de teste — saldo liquido zero.
+--   As queries com GROUP BY do TESTE 5 sao conferencia externa: elas NAO
+--   fazem parte do procedimento, que continua somando manualmente.
+
+
+SET SERVEROUTPUT ON SIZE UNLIMITED
+SET LINESIZE 200
+SET PAGESIZE 100
+
+-- # TESTE 0 - SANIDADE GERAL DO SCHEMA
+
+
+-- 0.1 Nenhum objeto pode estar quebrado.
+-- ATENCAO: CREATE OR REPLACE cria o objeto MESMO com erro de compilacao —
+-- ele fica INVALID no schema. Por isso "compilado" na tela nao garante sucesso.
+-- ESPERADO: nenhuma linha retornada.
+-- 0.1 Objetos INVALID (esperado: nenhuma linha)
+SELECT object_name, object_type, status
+FROM   user_objects
+WHERE  status = 'INVALID'
+ORDER  BY object_type, object_name;
+
+-- 0.2 Os 6 objetos da Sprint 3 existem e estao validos?
+-- ESPERADO: 6 linhas, todas com STATUS = VALID.
+PROMPT
+PROMPT >>> 0.2 Objetos da Sprint 3 (esperado: 6 linhas VALID)
+SELECT object_name, object_type, status
+FROM   user_objects
+WHERE  object_name IN ('PRC_EXPORTA_PETS_JSON', 'PRC_TOTALIZA_AGENDA_MINUTOS',
+                       'FNC_JSON_PET', 'FNC_VALIDA_SENHA_TUTOR',
+                       'TRG_AUDIT_AGENDAMENTO', 'AUDITORIA_AGENDAMENTO')
+ORDER  BY object_type, object_name;
+
+-- 0.3 A trigger esta habilitada e no evento correto?
+-- ESPERADO: STATUS=ENABLED, TRIGGERING_EVENT contendo INSERT OR UPDATE OR DELETE,
+--           TRIGGER_TYPE = AFTER EACH ROW, TABLE_NAME = AGENDAMENTO.
+PROMPT
+PROMPT >>> 0.3 Configuracao da trigger de auditoria
+SELECT trigger_name, table_name, trigger_type, triggering_event, status
+FROM   user_triggers
+WHERE  trigger_name = 'TRG_AUDIT_AGENDAMENTO';
+
+
+
+-- Penalidade da rubrica: 5 pontos POR TABELA com menos de 5 registros.
+-- ESPERADO: coluna SITUACAO = 'OK' em todas as linhas.
+-- Se PET vier 20 em vez de 10, o script rodou duas vezes: limpe o schema
+-- antes de tirar os prints, senao os totais do TESTE 5 saem inflados.
+PROMPT
+PROMPT >>> 1.1 Contagem por tabela (esperado: todas OK)
+SELECT tabela, qtd, CASE WHEN qtd >= 5 THEN 'OK' ELSE 'FALHA (<5)' END AS situacao
+FROM (
+    SELECT 'CLINICA'     AS tabela, COUNT(*) AS qtd FROM CLINICA
+    UNION ALL SELECT 'ESPECIE',     COUNT(*) FROM ESPECIE
+    UNION ALL SELECT 'RACA',        COUNT(*) FROM RACA
+    UNION ALL SELECT 'VETERINARIO', COUNT(*) FROM VETERINARIO
+    UNION ALL SELECT 'TUTOR',       COUNT(*) FROM TUTOR
+    UNION ALL SELECT 'PET',         COUNT(*) FROM PET
+    UNION ALL SELECT 'AGENDAMENTO', COUNT(*) FROM AGENDAMENTO
+)
+ORDER BY tabela;
+
+
+
+-- 2.1 Chamada direta dentro de um SELECT.
+-- Isso prova que a funcao e autonoma e nao depende da procedure.
+-- So funciona porque a funcao NAO faz DML — se fizesse, daria ORA-14551.
+-- ESPERADO: 3 documentos JSON bem formados.
+SELECT FNC_JSON_PET(p.ID_PET, p.NM_PET, e.NM_ESPECIE, c.NM_CLINICA,
+                    p.DT_NASCIMENTO, p.SG_SEXO, p.SG_PORTE, p.ST_ATIVO) AS json_pet
+FROM   PET     p
+JOIN   ESPECIE e ON e.ID_ESPECIE = p.ID_ESPECIE
+JOIN   CLINICA c ON c.ID_CLINICA = p.ID_CLINICA
+WHERE  ROWNUM <= 3;
+
+-- 2.2 Teste de ESCAPE — separa implementacao seria de ingenua.
+-- ESPERADO:
+--   caso 1: aspas internas saem como \" e a barra invertida como \\
+--           (o JSON continua valido, sem quebrar a string)
+--   caso 2: campos nulos saem como null SEM aspas, e "ativo":false
+
+BEGIN
+    DBMS_OUTPUT.PUT_LINE('--- Caso 1: nome com aspas e barra invertida ---');
+    DBMS_OUTPUT.PUT_LINE(
+        FNC_JSON_PET(99, 'Rex "O \Bravo"', 'Cao', 'Clinica X',
+                     DATE '2020-01-01', 'M', 'G', 'S'));
+
+    DBMS_OUTPUT.PUT_LINE('--- Caso 2: campos nulos e pet inativo ---');
+    DBMS_OUTPUT.PUT_LINE(
+        FNC_JSON_PET(98, 'SemDados', NULL, NULL, NULL, NULL, NULL, 'N'));
+END;
+/
+
+-- 2.3 Excecao tratada: campo obrigatorio ausente.
+-- ESPERADO: mensagem [ERRO FNC_JSON_PET] CAMPO_OBRIGATORIO + JSON de erro.
+--           A funcao NAO pode abortar — deve retornar o JSON de erro.
+
+BEGIN
+    DBMS_OUTPUT.PUT_LINE(FNC_JSON_PET(1, NULL, 'Cao', 'Clinica X',
+                                      SYSDATE, 'M', 'G', 'S'));
+END;
+/
+
+-- 2.4 PROVA DE CONFORMIDADE — penalidade de -10 POR OCORRENCIA.
+-- Varre o codigo-fonte compilado procurando funcoes JSON nativas do Oracle.
+-- ATENCAO: o underscore "_" e coringa de UM caractere no LIKE do Oracle.
+-- Sem ESCAPE, o padrao '%TO_JSON%' casaria com "documenTO JSON" (falso
+-- positivo). O ESCAPE '\' faz \_ valer como underscore literal.
+-- ESPERADO: nenhuma linha retornada. Print obrigatorio no PDF.
+PROMPT
+PROMPT >>> 2.4 Uso de funcoes JSON built-in (esperado: nenhuma linha)
+SELECT name, line, TRIM(text) AS linha_suspeita
+FROM   user_source
+WHERE  type IN ('FUNCTION', 'PROCEDURE', 'TRIGGER')
+  AND  TRIM(text) NOT LIKE '--%'
+  AND  (UPPER(text) LIKE '%JSON\_OBJECT%' ESCAPE '\'
+     OR UPPER(text) LIKE '%JSON\_VALUE%'  ESCAPE '\'
+     OR UPPER(text) LIKE '%JSON\_QUERY%'  ESCAPE '\'
+     OR UPPER(text) LIKE '%JSON\_TABLE%'  ESCAPE '\'
+     OR UPPER(text) LIKE '%JSON\_ARRAY%'  ESCAPE '\'
+     OR UPPER(text) LIKE '%TO\_JSON%'     ESCAPE '\')
+ORDER  BY name, line;
+
+
+-- ESPERADO, linha a linha:
+--   Kura#2026vet  -> SENHA_VALIDA
+--   senha         -> MIN_8_CARACTERES, FALTA_MAIUSCULA, FALTA_NUMERO, FALTA_ESPECIAL
+--   SENHAFORTE123 -> FALTA_MINUSCULA, FALTA_ESPECIAL
+--   Aaa#111bbb    -> REPETICAO_3_IGUAIS
+--   Felipe@2026!  -> CONTEM_LOGIN  (senha contem o local-part do e-mail)
+--   (null)        -> SENHA_NULA    (excecao tratada, sem abortar)
+
+SELECT senha, FNC_VALIDA_SENHA_TUTOR(senha, login) AS resultado
+FROM (
+    SELECT 1 ord, 'Kura#2026vet'  senha, CAST(NULL AS VARCHAR2(60)) login FROM DUAL
+    UNION ALL SELECT 2, 'senha',         NULL               FROM DUAL
+    UNION ALL SELECT 3, 'SENHAFORTE123', NULL               FROM DUAL
+    UNION ALL SELECT 4, 'Aaa#111bbb',    NULL               FROM DUAL
+    UNION ALL SELECT 5, 'Felipe@2026!',  'felipe@email.com' FROM DUAL
+)
+ORDER BY ord;
+
+-- 3.2 Excecao SENHA_NULA (esperado: mensagem tratada, sem ORA-)
+BEGIN
+    DBMS_OUTPUT.PUT_LINE('Resultado: ' || FNC_VALIDA_SENHA_TUTOR(NULL));
+END;
+/
+
+
+
+-- TESTE 4 - PROCEDIMENTO 1: JOIN + EXPORTACAO JSON
+
+-- 4.1 Caminho feliz: todas as clinicas.
+-- ESPERADO: array JSON entre [ e ], virgula em todos os elementos MENOS o
+--           ultimo, e a contagem final de documentos gerados.
+-- 4.1 Exportacao completa
+BEGIN
+    PRC_EXPORTA_PETS_JSON;
+END;
+/
+
+-- 4.2 Caminho feliz com filtro.
+-- ESPERADO: apenas os pets da clinica informada.
+-- 4.2 Exportacao filtrada por clinica
+DECLARE
+    v_id_clinica CLINICA.ID_CLINICA%TYPE;
+BEGIN
+    SELECT MIN(ID_CLINICA) INTO v_id_clinica FROM CLINICA;
+    PRC_EXPORTA_PETS_JSON(p_id_clinica => v_id_clinica);
+END;
+/
+
+-- 4.3 Excecao NO_DATA_FOUND: clinica inexistente.
+-- ESPERADO: a procedure NAO aborta. Imprime o erro tratado e grava LOG_ERRO.
+-- 4.3 Excecao NO_DATA_FOUND (clinica 999999)
+BEGIN
+    PRC_EXPORTA_PETS_JSON(p_id_clinica => 999999);
+END;
+/
+
+
+-- # TESTE 5 - PROCEDIMENTO 2: TOTALIZACAO MANUAL
+
+-- Este e o requisito de regra mais especifica e o mais facil de auditar.
+-- Mapeamento do exemplo da FIAP:
+--   agencia -> ID_CLINICA | conta -> ID_VETERINARIO | saldo -> NR_DURACAO_MINUTOS
+
+-- 5.1 Saida do procedimento.
+-- ESPERADO: linhas por combinacao, "Sub Total" ao fim de cada clinica com as
+--           COLUNAS CATEGORICAS NULAS, e "Total Geral" no final.
+-- 5.1 Relatorio com subtotais e total geral
+BEGIN
+    PRC_TOTALIZA_AGENDA_MINUTOS;
+END;
+/
+
+-- 5.2 CONFERENCIA INDEPENDENTE.
+-- As queries abaixo usam GROUP BY de proposito: sao a "resposta do gabarito".
+-- Elas NAO estao dentro do procedimento — servem so para provar que o
+-- somatorio manual chegou ao mesmo numero que o Oracle chegaria.
+-- ESPERADO: valores identicos, linha a linha, aos impressos em 5.1.
+-- 5.2a Conferencia: soma por combinacao (clinica + veterinario)
+SELECT ID_CLINICA, ID_VETERINARIO,
+       COUNT(*) AS qtd, SUM(NR_DURACAO_MINUTOS) AS minutos
+FROM   AGENDAMENTO
+WHERE  ID_VETERINARIO IS NOT NULL
+GROUP  BY ID_CLINICA, ID_VETERINARIO
+ORDER  BY ID_CLINICA, ID_VETERINARIO;
+
+-- 5.2b Conferencia: subtotal por clinica
+SELECT ID_CLINICA, COUNT(*) AS qtd, SUM(NR_DURACAO_MINUTOS) AS subtotal
+FROM   AGENDAMENTO
+WHERE  ID_VETERINARIO IS NOT NULL
+GROUP  BY ID_CLINICA
+ORDER  BY ID_CLINICA;
+
+-- 5.2c Conferencia: total geral
+SELECT COUNT(*) AS qtd_total, SUM(NR_DURACAO_MINUTOS) AS total_geral
+FROM   AGENDAMENTO
+WHERE  ID_VETERINARIO IS NOT NULL;
+
+-- 5.3 PROVA DE CONFORMIDADE — agregacao automatica e proibida.
+-- ESPERADO: nenhuma linha retornada. Print obrigatorio no PDF.
+-- 5.3 Uso de ROLLUP/CUBE/GROUPING (esperado: nenhuma linha)
+SELECT name, line, TRIM(text) AS linha_suspeita
+FROM   user_source
+WHERE  name = 'PRC_TOTALIZA_AGENDA_MINUTOS'
+  AND  TRIM(text) NOT LIKE '--%'
+  AND  (UPPER(text) LIKE '%ROLLUP%' OR UPPER(text) LIKE '%CUBE%'
+     OR UPPER(text) LIKE '%GROUPING%')
+ORDER  BY line;
+
+-- 5.4 Excecao: janela de tempo sem nenhum fato.
+-- ESPERADO: mensagem de erro tratado + registro em LOG_ERRO.
+-- 5.4 Excecao SEM_FATOS (janela negativa)
+BEGIN
+    PRC_TOTALIZA_AGENDA_MINUTOS(p_dias_retroativos => -30);
+END;
+/
+
+
+
+
+-- TESTE 6 - TRIGGER DE AUDITORIA (INSERT / UPDATE / DELETE)
+
+-- UNICO teste deste arquivo que altera dados. O registro criado e removido
+-- no mesmo bloco: saldo liquido zero em AGENDAMENTO, mas 3 linhas novas em
+-- AUDITORIA_AGENDAMENTO — que e exatamente a evidencia que a rubrica pede.
+
+-- 6.1 Ciclo completo dos tres DMLs.
+-- ESPERADO: "Registros de auditoria gerados: 3".
+-- 6.1 Ciclo DML auditado (esperado: 3 registros gerados)
+DECLARE
+    v_id  AGENDAMENTO.ID_AGENDAMENTO%TYPE;
+    v_ini NUMBER;
+    v_fim NUMBER;
+BEGIN
+    SELECT COUNT(*) INTO v_ini FROM AUDITORIA_AGENDAMENTO;
+
+    INSERT INTO AGENDAMENTO (
+        ID_AGENDAMENTO, ID_CLINICA, ID_VETERINARIO,
+        NM_PACIENTE, DS_SERVICO, DT_AGENDAMENTO, NR_DURACAO_MINUTOS,
+        ST_STATUS, DS_TIPO, DT_CRIACAO
+    ) VALUES (
+        SEQ_AGENDAMENTO.NEXTVAL,
+        (SELECT MIN(ID_CLINICA)     FROM CLINICA),
+        (SELECT MIN(ID_VETERINARIO) FROM VETERINARIO),
+        'Teste Auditoria', 'Validacao Sprint 3',
+        SYSTIMESTAMP + INTERVAL '1' DAY, 30,
+        'AGENDADO', 'CONSULTA', SYSTIMESTAMP
+    ) RETURNING ID_AGENDAMENTO INTO v_id;
+
+    UPDATE AGENDAMENTO
+    SET    ST_STATUS = 'CONFIRMADO', NR_DURACAO_MINUTOS = 60
+    WHERE  ID_AGENDAMENTO = v_id;
+
+    DELETE FROM AGENDAMENTO WHERE ID_AGENDAMENTO = v_id;
+    COMMIT;
+
+    SELECT COUNT(*) INTO v_fim FROM AUDITORIA_AGENDAMENTO;
+    DBMS_OUTPUT.PUT_LINE('Registros de auditoria gerados: ' || (v_fim - v_ini)
+                         || '  (esperado: 3)  |  ID testado: ' || v_id);
+EXCEPTION
+    WHEN OTHERS THEN
+        ROLLBACK;
+        DBMS_OUTPUT.PUT_LINE('[FALHA NO TESTE 6] ' || SQLERRM);
+END;
+/
+
+-- 6.2 O padrao OLD/NEW e a assinatura de uma trigger correta.
+-- ESPERADO exatamente este padrao nas 3 ultimas linhas:
+--   INSERT -> OLD_ NULO       | NEW_ PREENCHIDO
+--   UPDATE -> OLD_ PREENCHIDO | NEW_ PREENCHIDO
+--   DELETE -> OLD_ PREENCHIDO | NEW_ NULO
+-- 6.2 Padrao :OLD / :NEW por tipo de operacao
+SELECT DS_OPERACAO,
+       NVL2(DS_VALORES_ANTERIORES, 'PREENCHIDO', 'NULO') AS old_,
+       NVL2(DS_VALORES_NOVOS,      'PREENCHIDO', 'NULO') AS new_,
+       NM_USUARIO,
+       TO_CHAR(DT_OPERACAO, 'DD/MM HH24:MI:SS') AS quando
+FROM   AUDITORIA_AGENDAMENTO
+ORDER  BY ID_AUDITORIA DESC
+FETCH FIRST 3 ROWS ONLY;
+
+-- 6.3 O UPDATE precisa mostrar a mudanca de verdade.
+-- ESPERADO: no OLD -> ST_STATUS=AGENDADO   e NR_DURACAO_MINUTOS=30
+--           no NEW -> ST_STATUS=CONFIRMADO e NR_DURACAO_MINUTOS=60
+-- 6.3 Conteudo do UPDATE mais recente
+SELECT DS_VALORES_ANTERIORES AS valores_old
+FROM   AUDITORIA_AGENDAMENTO
+WHERE  DS_OPERACAO = 'UPDATE'
+ORDER  BY ID_AUDITORIA DESC
+FETCH FIRST 1 ROWS ONLY;
+
+SELECT DS_VALORES_NOVOS AS valores_new
+FROM   AUDITORIA_AGENDAMENTO
+WHERE  DS_OPERACAO = 'UPDATE'
+ORDER  BY ID_AUDITORIA DESC
+FETCH FIRST 1 ROWS ONLY;
+
+-- 6.4 Resumo da trilha.
+-- ESPERADO: as tres operacoes presentes, com o usuario do banco preenchido.
+PROMPT
+PROMPT >>> 6.4 Resumo por tipo de operacao
+SELECT DS_OPERACAO, COUNT(*) AS qtd,
+       MIN(TO_CHAR(DT_OPERACAO, 'DD/MM HH24:MI')) AS primeira,
+       MAX(TO_CHAR(DT_OPERACAO, 'DD/MM HH24:MI')) AS ultima
+FROM   AUDITORIA_AGENDAMENTO
+GROUP  BY DS_OPERACAO
+ORDER  BY 1;
+
+
+
+-- TESTE 7 - EXCECOES TRATADAS (EVIDENCIA EM EXECUCAO)
+
+-- A rubrica penaliza -5 POR ITEM que nao apresentar erro tratado EM EXECUCAO.
+-- Ter EXCEPTION WHEN escrito no codigo nao basta: tem que aparecer o registro.
+
+-- 7.1 Ultimas excecoes gravadas.
+-- ESPERADO: pelo menos as excecoes disparadas nos testes 4.3 e 5.4.
+-- 7.1 Ultimas excecoes registradas em LOG_ERRO
+SELECT NM_PROCEDURE, NR_CODIGO_ERRO,
+       TO_CHAR(DT_ERRO, 'DD/MM HH24:MI:SS') AS quando,
+       SUBSTR(DS_MENSAGEM_ERRO, 1, 70) AS mensagem
+FROM   LOG_ERRO
+ORDER  BY ID_LOG DESC
+FETCH FIRST 10 ROWS ONLY;
+
+-- 7.2 Cobertura por rotina.
+-- ESPERADO: LOG_ERRO NAO pode estar vazio. Se estiver, os testes de excecao
+--           nao gravaram e a pontuacao do item se perde.
+-- 7.2 Cobertura de excecoes por rotina
+SELECT NM_PROCEDURE, COUNT(*) AS qtd_excecoes
+FROM   LOG_ERRO
+GROUP  BY NM_PROCEDURE
+ORDER  BY NM_PROCEDURE;
+
+
+
+-- RESUMO FINAL — CHECKLIST DA SPRINT 3
+-- ESPERADO: coluna SITUACAO = 'OK' em todas as linhas.
+
+SELECT item, valor,
+       CASE WHEN ok = 1 THEN 'OK' ELSE 'VERIFICAR' END AS situacao
+FROM (
+    SELECT 1 ord, '2 procedimentos criados' AS item,
+           TO_CHAR(COUNT(*)) AS valor,
+           CASE WHEN COUNT(*) = 2 THEN 1 ELSE 0 END AS ok
+    FROM   user_objects
+    WHERE  object_type = 'PROCEDURE' AND status = 'VALID'
+      AND  object_name IN ('PRC_EXPORTA_PETS_JSON','PRC_TOTALIZA_AGENDA_MINUTOS')
+    UNION ALL
+    SELECT 2, '2 funcoes criadas', TO_CHAR(COUNT(*)),
+           CASE WHEN COUNT(*) = 2 THEN 1 ELSE 0 END
+    FROM   user_objects
+    WHERE  object_type = 'FUNCTION' AND status = 'VALID'
+      AND  object_name IN ('FNC_JSON_PET','FNC_VALIDA_SENHA_TUTOR')
+    UNION ALL
+    SELECT 3, '1 trigger habilitada', TO_CHAR(COUNT(*)),
+           CASE WHEN COUNT(*) = 1 THEN 1 ELSE 0 END
+    FROM   user_triggers
+    WHERE  trigger_name = 'TRG_AUDIT_AGENDAMENTO' AND status = 'ENABLED'
+    UNION ALL
+    SELECT 4, 'Registros de auditoria', TO_CHAR(COUNT(*)),
+           CASE WHEN COUNT(*) >= 3 THEN 1 ELSE 0 END
+    FROM   AUDITORIA_AGENDAMENTO
+    UNION ALL
+    SELECT 5, 'Excecoes tratadas em LOG_ERRO', TO_CHAR(COUNT(*)),
+           CASE WHEN COUNT(*) >= 1 THEN 1 ELSE 0 END
+    FROM   LOG_ERRO
+    UNION ALL
+    SELECT 6, 'Nenhum objeto INVALID', TO_CHAR(COUNT(*)),
+           CASE WHEN COUNT(*) = 0 THEN 1 ELSE 0 END
+    FROM   user_objects WHERE status = 'INVALID'
+    UNION ALL
+    SELECT 7, 'Tabelas com menos de 5 registros', TO_CHAR(COUNT(*)),
+           CASE WHEN COUNT(*) = 0 THEN 1 ELSE 0 END
+    FROM (
+        SELECT 'CLINICA' t, COUNT(*) q FROM CLINICA HAVING COUNT(*) < 5
+        UNION ALL SELECT 'ESPECIE',     COUNT(*) FROM ESPECIE     HAVING COUNT(*) < 5
+        UNION ALL SELECT 'RACA',        COUNT(*) FROM RACA        HAVING COUNT(*) < 5
+        UNION ALL SELECT 'VETERINARIO', COUNT(*) FROM VETERINARIO HAVING COUNT(*) < 5
+        UNION ALL SELECT 'TUTOR',       COUNT(*) FROM TUTOR       HAVING COUNT(*) < 5
+        UNION ALL SELECT 'PET',         COUNT(*) FROM PET         HAVING COUNT(*) < 5
+        UNION ALL SELECT 'AGENDAMENTO', COUNT(*) FROM AGENDAMENTO HAVING COUNT(*) < 5
+    )
+)
+ORDER BY ord;
+
+-- FIM DA BATERIA DE TESTES — SPRINT 3
 -- FIM DO ARQUIVO — kura_schema_final_entrega.sql
--- ============================================================================
