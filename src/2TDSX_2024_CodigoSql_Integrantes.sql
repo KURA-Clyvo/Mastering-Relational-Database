@@ -1869,5 +1869,90 @@ PROMPT --> PRC_RELATORIO_COBRANCAS compilada
 SHOW ERRORS PROCEDURE PRC_RELATORIO_COBRANCAS
 
 PROMPT === BLOCO 9.2: PRC_RELATORIO_COBRANCAS criada ===
+
+
+-- #############################################################################
+-- #  BLOCO 10 - TRIGGER DE AUDITORIA
+-- #
+-- #  TRG_AUDITORIA_COBRANCA - trilha de auditoria DML da tabela COBRANCA
+-- #  (requisito da Sprint 3, 30 pts). Grava em AUDITORIA_COBRANCA (BLOCO 6),
+-- #  uma linha por operacao (INSERT / UPDATE / DELETE), com:
+-- #    * NM_USUARIO   = USER (nome do usuario do banco)
+-- #    * DS_OPERACAO  = INSERT | UPDATE | DELETE  (via INSERTING/UPDATING/DELETING)
+-- #    * DT_OPERACAO  = SYSTIMESTAMP (DEFAULT da coluna)
+-- #    * DS_VALORES_OLD = :OLD serializado por FN_COBRANCA_JSON  (nulo em INSERT)
+-- #    * DS_VALORES_NEW = :NEW serializado por FN_COBRANCA_JSON  (nulo em DELETE)
+-- #
+-- #  DECISOES DE DESENHO (perguntas de banca):
+-- #   1. FOR EACH ROW e obrigatorio: sem ele :OLD/:NEW nao existem e o trigger
+-- #      nem compila. A auditoria e por LINHA afetada.
+-- #   2. Reusa a FUNCAO 1 (FN_COBRANCA_JSON) para serializar :OLD/:NEW. Custo
+-- #      marginal zero e amarra a entrega numa historia so. Funciona porque a
+-- #      FN_COBRANCA_JSON recebe ESCALARES e so consulta SERVICO_PRECO -- um
+-- #      trigger FOR EACH ROW em COBRANCA NAO pode consultar COBRANCA (ORA-04091,
+-- #      tabela mutante), mas pode consultar outras tabelas.
+-- #   3. AUDITORIA_COBRANCA nao tem FK para COBRANCA (BLOCO 6): auditar um DELETE
+-- #      com FK ativa seria autocontraditorio -- a linha auditada acabou de
+-- #      deixar de existir.
+-- #   4. SEM bloco EXCEPTION no trigger. A rubrica exige >= 3 excecoes em
+-- #      PROCEDIMENTOS e FUNCOES -- o trigger nao esta nessa lista. Um WHEN OTHERS
+-- #      mudo aqui ESCONDERIA falha de auditoria, que e o oposto do proposito do
+-- #      objeto. A FN_COBRANCA_JSON ja tem WHEN OTHERS com JSON de fallback, entao
+-- #      um erro de serializacao NAO derruba o DML de negocio.
+-- #############################################################################
+
 PROMPT
-PROMPT === FIM DOS BLOCOS 0-9. Blocos 10-11 nas tasks SD-06..SD-08. ===
+PROMPT === BLOCO 10: trigger de auditoria ===
+
+CREATE OR REPLACE TRIGGER TRG_AUDITORIA_COBRANCA
+AFTER INSERT OR UPDATE OR DELETE ON COBRANCA
+FOR EACH ROW
+DECLARE
+    v_operacao VARCHAR2(10);
+    v_valores_old VARCHAR2(4000);
+    v_valores_new VARCHAR2(4000);
+    v_id_cobranca NUMBER;
+BEGIN
+    -- 1) tipo do DML disparado
+    IF INSERTING THEN
+        v_operacao := 'INSERT';
+    ELSIF UPDATING THEN
+        v_operacao := 'UPDATE';
+    ELSE
+        v_operacao := 'DELETE';
+    END IF;
+
+    -- 2) :OLD -- nao existe em INSERT
+    IF UPDATING OR DELETING THEN
+        v_valores_old := FN_COBRANCA_JSON(
+            :OLD.ID_COBRANCA, :OLD.ID_EVENTO_CLINICO, :OLD.ID_CLINICA,
+            :OLD.ID_SERVICO_PRECO, :OLD.VL_COBRADO, :OLD.DS_FORMA_PAGAMENTO,
+            :OLD.DT_COBRANCA, :OLD.ST_ATIVA);
+    END IF;
+
+    -- 3) :NEW -- nao existe em DELETE
+    IF INSERTING OR UPDATING THEN
+        v_valores_new := FN_COBRANCA_JSON(
+            :NEW.ID_COBRANCA, :NEW.ID_EVENTO_CLINICO, :NEW.ID_CLINICA,
+            :NEW.ID_SERVICO_PRECO, :NEW.VL_COBRADO, :NEW.DS_FORMA_PAGAMENTO,
+            :NEW.DT_COBRANCA, :NEW.ST_ATIVA);
+    END IF;
+
+    -- 4) PK do registro afetado (em DELETE so ha :OLD)
+    v_id_cobranca := NVL(:NEW.ID_COBRANCA, :OLD.ID_COBRANCA);
+
+    -- 5) grava a trilha (ID_AUDITORIA e DT_OPERACAO vem dos DEFAULT da tabela)
+    INSERT INTO AUDITORIA_COBRANCA (
+        NM_USUARIO, DS_OPERACAO, ID_COBRANCA, DS_VALORES_OLD, DS_VALORES_NEW
+    ) VALUES (
+        USER, v_operacao, v_id_cobranca, v_valores_old, v_valores_new
+    );
+END TRG_AUDITORIA_COBRANCA;
+/
+
+PROMPT --> TRG_AUDITORIA_COBRANCA compilada
+SHOW ERRORS TRIGGER TRG_AUDITORIA_COBRANCA
+
+PROMPT === BLOCO 10: TRG_AUDITORIA_COBRANCA criada ===
+PROMPT
+PROMPT === FIM DOS BLOCOS 0-10. Bloco 11 (demonstracao) na task SD-08. ===
