@@ -1,0 +1,62 @@
+LICENÇA PROPRIETÁRIA — KURA
+
+Copyright (c) 2026 Felipe Ferrete, Nikolas Brisola, Guilherme Sola,
+Gustavo Bosak, Clayton Alves. Todos os direitos reservados.
+
+Este repositório é público para LEITURA. Isso não o torna software livre nem de
+código aberto: nenhum direito de uso é concedido além dos expressamente listados
+abaixo.
+
+
+PERMITIDO, sem necessidade de autorização prévia
+
+  a) visualizar e ler o código-fonte;
+  b) clonar o repositório para leitura, estudo, avaliação acadêmica ou revisão
+     técnica, inclusive por bancas examinadoras e por processos seletivos;
+  c) executar o software localmente com o único propósito de avaliá-lo;
+  d) citar trechos, com atribuição, em contexto acadêmico ou jornalístico.
+
+
+PROIBIDO, salvo autorização prévia e por escrito dos titulares
+
+  a) usar o software, no todo ou em parte, em ambiente de produção;
+  b) qualquer uso comercial, direto ou indireto;
+  c) redistribuir, publicar, hospedar como serviço ou sublicenciar o software
+     ou partes dele;
+  d) criar obras derivadas destinadas a qualquer finalidade não listada como
+     permitida;
+  e) remover ou alterar avisos de copyright, de autoria ou esta licença.
+
+
+GARANTIA
+
+O SOFTWARE É FORNECIDO "COMO ESTÁ", SEM GARANTIA DE QUALQUER NATUREZA, EXPRESSA
+OU IMPLÍCITA, INCLUINDO MAS NÃO SE LIMITANDO ÀS GARANTIAS DE COMERCIABILIDADE,
+ADEQUAÇÃO A UMA FINALIDADE ESPECÍFICA E NÃO VIOLAÇÃO. EM NENHUMA HIPÓTESE OS
+TITULARES SERÃO RESPONSABILIZADOS POR QUALQUER REIVINDICAÇÃO, DANO OU OUTRA
+RESPONSABILIDADE DECORRENTE DO SOFTWARE, DE SEU USO OU DE OUTRAS RELAÇÕES COM
+ELE.
+
+
+TERCEIROS
+
+As dependências de terceiros permanecem sob as licenças originais delas, que
+esta licença não altera nem pretende alterar.
+
+
+CONTATO
+
+Para qualquer uso além do permitido acima, procure os titulares pelos perfis de
+GitHub indicados em https://github.com/KURA-Clyvo
+
+
+--------------------------------------------------------------------------
+
+ENGLISH SUMMARY (informative; the Portuguese text above is the binding one)
+
+Proprietary license, all rights reserved. This repository is public for reading.
+You may view, clone, study and run it locally in order to evaluate it, and quote
+it with attribution. You may NOT use it in production, use it commercially,
+redistribute or host it as a service, sublicense it, or create derivative works,
+without prior written permission from the copyright holders. Provided "as is",
+without warranty of any kind. Third-party dependencies keep their own licenses.
