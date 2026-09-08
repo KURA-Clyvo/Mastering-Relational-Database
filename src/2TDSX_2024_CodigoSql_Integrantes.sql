@@ -2144,5 +2144,194 @@ PROMPT --> TRG_AUDITORIA_COBRANCA compilada
 SHOW ERRORS TRIGGER TRG_AUDITORIA_COBRANCA
 
 PROMPT === BLOCO 10: TRG_AUDITORIA_COBRANCA criada ===
+
+
+-- #############################################################################
+-- #  BLOCO 11 - DEMONSTRACAO
+-- #
+-- #  Exercita os 5 objetos PL/SQL no CAMINHO FELIZ e dispara CADA EXCECAO
+-- #  tratada, alem de gerar >= 6 operacoes DML em COBRANCA (para AUDITORIA_COBRANCA
+-- #  chegar a >= 5 linhas) e um UPDATE real em TRIAGEM_LUNA.DS_NIVEL_URGENCIA
+-- #  usando a Funcao 2.
+-- #
+-- #  ⚠️ Este bloco DISPARA excecoes de proposito -- todas sao TRATADAS pelos
+-- #  objetos (nao vazam). A saida pode conter a string "ORA-01403" etc. dentro
+-- #  do texto de SQLERRM que os handlers registram em LOG_ERRO: isso e EVIDENCIA
+-- #  de que o tratamento de erro funciona, nao falha estrutural. A conferencia
+-- #  de "0 linhas ORA-" da rubrica vale para os BLOCOS 0-7 (estrutura + carga).
+-- #
+-- #  Re-executavel: as cobrancas de demonstracao usam IDs 950-952 e sao
+-- #  removidas ao fim de 11.6, entao COBRANCA volta a 18 linhas.
+-- #############################################################################
+
 PROMPT
-PROMPT === FIM DOS BLOCOS 0-10. Bloco 11 (demonstracao) na task SD-08. ===
+PROMPT #########################  BLOCO 11: DEMONSTRACAO  #########################
+
+PROMPT
+PROMPT ==== 11.1  FN_COBRANCA_JSON -- caminho feliz (aspas escapadas e servico nulo) ====
+DECLARE
+    v VARCHAR2(4000);
+BEGIN
+    SELECT FN_COBRANCA_JSON(c.ID_COBRANCA, c.ID_EVENTO_CLINICO, c.ID_CLINICA, c.ID_SERVICO_PRECO,
+                            c.VL_COBRADO, c.DS_FORMA_PAGAMENTO, c.DT_COBRANCA, c.ST_ATIVA)
+      INTO v FROM COBRANCA c WHERE c.ID_COBRANCA = 8;
+    DBMS_OUTPUT.PUT_LINE('cobranca 8 (servico com aspas): ' || v);
+
+    SELECT FN_COBRANCA_JSON(c.ID_COBRANCA, c.ID_EVENTO_CLINICO, c.ID_CLINICA, c.ID_SERVICO_PRECO,
+                            c.VL_COBRADO, c.DS_FORMA_PAGAMENTO, c.DT_COBRANCA, c.ST_ATIVA)
+      INTO v FROM COBRANCA c WHERE c.ID_COBRANCA = 3;
+    DBMS_OUTPUT.PUT_LINE('cobranca 3 (servico nulo)     : ' || v);
+END;
+/
+
+PROMPT
+PROMPT ==== 11.2  FN_COBRANCA_JSON -- excecoes tratadas ====
+DECLARE
+    v VARCHAR2(4000);
+BEGIN
+    v := FN_COBRANCA_JSON(1, 1, 1, 999, 100, 'PIX', SYSTIMESTAMP, 'S');   -- NO_DATA_FOUND (servico 999)
+    DBMS_OUTPUT.PUT_LINE('NO_DATA_FOUND -> ' || v);
+    v := FN_COBRANCA_JSON(2, 2, 1, NULL, 100, RPAD('X', 5000, 'X'), SYSTIMESTAMP, 'S'); -- VALUE_ERROR
+    DBMS_OUTPUT.PUT_LINE('VALUE_ERROR   -> ' || v);
+END;
+/
+
+PROMPT
+PROMPT ==== 11.3  PRC_LISTAR_COBRANCAS_JSON -- caminho feliz (todas as clinicas) ====
+BEGIN PRC_LISTAR_COBRANCAS_JSON; END;
+/
+PROMPT
+PROMPT ==== 11.4  PRC_LISTAR_COBRANCAS_JSON -- excecao tratada (clinica 999 -> LOG_ERRO) ====
+BEGIN PRC_LISTAR_COBRANCAS_JSON(p_id_clinica => 999); END;
+/
+
+PROMPT
+PROMPT ==== 11.5  PRC_RELATORIO_COBRANCAS -- caminho feliz (formato fixo p.26) ====
+BEGIN PRC_RELATORIO_COBRANCAS; END;
+/
+PROMPT
+PROMPT ==== 11.6  PRC_RELATORIO_COBRANCAS -- excecao tratada (clinica 999 -> LOG_ERRO) ====
+BEGIN PRC_RELATORIO_COBRANCAS(p_id_clinica => 999); END;
+/
+
+PROMPT
+PROMPT ==== 11.7  FN_CALCULAR_SCORE_URGENCIA -- >= 5 casos (um de cada nivel + vazio) ====
+DECLARE
+    PROCEDURE caso(p_texto IN VARCHAR2, p_esperado IN VARCHAR2) IS
+        v VARCHAR2(10);
+    BEGIN
+        v := FN_CALCULAR_SCORE_URGENCIA(p_texto);
+        DBMS_OUTPUT.PUT_LINE('  nivel=' || RPAD(v, 6) || ' (esperado ' || RPAD(p_esperado, 6) || ') | '
+            || SUBSTR(NVL(p_texto, '(NULO)'), 1, 60));
+    END caso;
+BEGIN
+    caso('Meu cachorro teve uma convulsao e esta sangrando muito', 'ALTA');
+    caso('A gata esta vomitando e com diarreia desde ontem',        'MEDIA');
+    caso('Tenho uma duvida sobre a racao do filhote',               'BAIXA');
+    caso('Ele esta otimo, so passei para agradecer o atendimento',  'BAIXA');
+    caso('',                                                        'BAIXA');
+    caso('meu cao teve convulsao, esta com febre e uma duvida',     'ALTA (score 14, acumula)');
+END;
+/
+PROMPT
+PROMPT ==== 11.8  FN_CALCULAR_SCORE_URGENCIA -- excecao tratada (texto acima do limite -> LOG_ERRO) ====
+DECLARE
+    v VARCHAR2(10);
+BEGIN
+    v := FN_CALCULAR_SCORE_URGENCIA(RPAD('palavra ', 5000, 'palavra '));
+    DBMS_OUTPUT.PUT_LINE('  retornou (apos tratar): ' || v);
+END;
+/
+PROMPT
+PROMPT ==== 11.9  FN_CALCULAR_SCORE_URGENCIA -- UPDATE real em TRIAGEM_LUNA.DS_NIVEL_URGENCIA ====
+PROMPT (a funcao classifica DS_DESCRICAO e o nivel calculado e gravado na coluna. Chamada de
+PROMPT  dentro de PL/SQL -- nao embutida no SET do UPDATE -- porque a funcao grava LOG_ERRO.)
+DECLARE
+    v_nivel VARCHAR2(10);
+BEGIN
+    -- descricoes ricas em keyword para a demonstracao ter contraste
+    UPDATE TRIAGEM_LUNA SET DS_DESCRICAO = 'Pet com convulsao e sangramento intenso, chegando agora' WHERE ID_TRIAGEM = 1;
+    UPDATE TRIAGEM_LUNA SET DS_DESCRICAO = 'Animal vomitando muito e com febre desde ontem'          WHERE ID_TRIAGEM = 2;
+    UPDATE TRIAGEM_LUNA SET DS_DESCRICAO = 'Tenho uma duvida sobre a alimentacao, ele esta bem'      WHERE ID_TRIAGEM = 3;
+
+    FOR r IN (SELECT ID_TRIAGEM, DS_NIVEL_URGENCIA AS nivel_antes, DS_DESCRICAO FROM TRIAGEM_LUNA ORDER BY ID_TRIAGEM) LOOP
+        v_nivel := FN_CALCULAR_SCORE_URGENCIA(r.DS_DESCRICAO);
+        UPDATE TRIAGEM_LUNA SET DS_NIVEL_URGENCIA = v_nivel WHERE ID_TRIAGEM = r.ID_TRIAGEM;
+        DBMS_OUTPUT.PUT_LINE('  triagem ' || r.ID_TRIAGEM || ': ' || RPAD(r.nivel_antes, 6)
+            || ' -> ' || RPAD(v_nivel, 6) || ' | ' || SUBSTR(r.DS_DESCRICAO, 1, 55));
+    END LOOP;
+    COMMIT;
+END;
+/
+
+PROMPT
+PROMPT ==== 11.10  TRG_AUDITORIA_COBRANCA -- >= 6 operacoes DML em COBRANCA ====
+DECLARE
+    v_evt NUMBER;
+BEGIN
+    SELECT MIN(ID_EVENTO) INTO v_evt FROM EVENTO_CLINICO WHERE ID_CLINICA = 1;
+
+    INSERT INTO COBRANCA (ID_COBRANCA, ID_EVENTO_CLINICO, ID_CLINICA, ID_SERVICO_PRECO, VL_COBRADO, DS_FORMA_PAGAMENTO)
+        VALUES (950, v_evt, 1, 1, 111.11, 'PIX');
+    INSERT INTO COBRANCA (ID_COBRANCA, ID_EVENTO_CLINICO, ID_CLINICA, ID_SERVICO_PRECO, VL_COBRADO, DS_FORMA_PAGAMENTO)
+        VALUES (951, v_evt, 1, 2, 222.22, 'CARTAO_CREDITO');
+    INSERT INTO COBRANCA (ID_COBRANCA, ID_EVENTO_CLINICO, ID_CLINICA, ID_SERVICO_PRECO, VL_COBRADO, DS_FORMA_PAGAMENTO)
+        VALUES (952, v_evt, 1, NULL, 333.33, 'DINHEIRO');
+
+    UPDATE COBRANCA SET VL_COBRADO = 150.00, DS_FORMA_PAGAMENTO = 'BOLETO'  WHERE ID_COBRANCA = 950;
+    UPDATE COBRANCA SET ST_ATIVA = 'N'                                       WHERE ID_COBRANCA = 951;
+
+    DELETE FROM COBRANCA WHERE ID_COBRANCA IN (950, 951, 952);
+
+    COMMIT;
+    DBMS_OUTPUT.PUT_LINE('  8 operacoes DML (3 INSERT, 2 UPDATE, 3 DELETE) em COBRANCA -- todas auditadas.');
+    DBMS_OUTPUT.PUT_LINE('  COBRANCA volta a 18 linhas; AUDITORIA_COBRANCA guarda o historico.');
+END;
+/
+
+PROMPT
+PROMPT ==== 11.11  AUDITORIA_COBRANCA -- trilha com :OLD e :NEW lado a lado ====
+SELECT ID_AUDITORIA, NM_USUARIO, DS_OPERACAO,
+       TO_CHAR(DT_OPERACAO, 'YYYY-MM-DD HH24:MI:SS') AS quando,
+       ID_COBRANCA,
+       NVL(SUBSTR(DS_VALORES_OLD, 1, 90), '(nulo)') AS old_90,
+       NVL(SUBSTR(DS_VALORES_NEW, 1, 90), '(nulo)') AS new_90
+  FROM AUDITORIA_COBRANCA
+ ORDER BY ID_AUDITORIA;
+
+PROMPT
+PROMPT ==== 11.12  CONTAGENS FINAIS ====
+PROMPT (AUDITORIA_COBRANCA >= 5 ; as 30 tabelas do V19 com COUNT(*) >= 5)
+SELECT DS_OPERACAO, COUNT(*) AS qtd FROM AUDITORIA_COBRANCA GROUP BY DS_OPERACAO ORDER BY DS_OPERACAO;
+SELECT COUNT(*) AS total_auditoria FROM AUDITORIA_COBRANCA;
+
+SELECT MIN(q) AS menor_contagem_das_30_tabelas_v19 FROM (
+  SELECT COUNT(*) q FROM CLINICA UNION ALL SELECT COUNT(*) FROM ESPECIE UNION ALL
+  SELECT COUNT(*) FROM TIPO_EVENTO UNION ALL SELECT COUNT(*) FROM MEDICAMENTO UNION ALL
+  SELECT COUNT(*) FROM LOG_ERRO UNION ALL SELECT COUNT(*) FROM IDEMPOTENCY_KEY UNION ALL
+  SELECT COUNT(*) FROM RACA UNION ALL SELECT COUNT(*) FROM VETERINARIO UNION ALL
+  SELECT COUNT(*) FROM TUTOR UNION ALL SELECT COUNT(*) FROM DISPOSITIVO_IOT UNION ALL
+  SELECT COUNT(*) FROM SERVICO_PRECO UNION ALL SELECT COUNT(*) FROM PET UNION ALL
+  SELECT COUNT(*) FROM INVITE_TUTOR UNION ALL SELECT COUNT(*) FROM CONSENTIMENTO UNION ALL
+  SELECT COUNT(*) FROM USUARIO_CLINICA UNION ALL SELECT COUNT(*) FROM LEITURA_TEMPERATURA UNION ALL
+  SELECT COUNT(*) FROM INTERACAO_CANAL UNION ALL SELECT COUNT(*) FROM NOTIFICACAO UNION ALL
+  SELECT COUNT(*) FROM TUTOR_PET UNION ALL SELECT COUNT(*) FROM CONTA_TUTOR UNION ALL
+  SELECT COUNT(*) FROM EVENTO_CLINICO UNION ALL SELECT COUNT(*) FROM ALERTA_TEMPERATURA UNION ALL
+  SELECT COUNT(*) FROM TRIAGEM_LUNA UNION ALL SELECT COUNT(*) FROM AGENDAMENTO UNION ALL
+  SELECT COUNT(*) FROM CONSULTA UNION ALL SELECT COUNT(*) FROM EXAME UNION ALL
+  SELECT COUNT(*) FROM VACINA UNION ALL SELECT COUNT(*) FROM PRESCRICAO UNION ALL
+  SELECT COUNT(*) FROM DOCUMENTO UNION ALL SELECT COUNT(*) FROM COBRANCA
+);
+
+PROMPT
+PROMPT ==== 11.13  LOG_ERRO -- excecoes registradas pelos objetos nesta demonstracao ====
+SELECT NM_PROCEDURE, NR_CODIGO_ERRO, DS_PARAMETROS,
+       SUBSTR(DS_MENSAGEM_ERRO, 1, 45) AS msg_45
+  FROM LOG_ERRO
+ WHERE NM_PROCEDURE IN ('PRC_LISTAR_COBRANCAS_JSON', 'PRC_RELATORIO_COBRANCAS', 'FN_CALCULAR_SCORE_URGENCIA')
+ ORDER BY ID_LOG;
+
+PROMPT
+PROMPT #########################  FIM DA DEMONSTRACAO (BLOCO 11)  #########################
+PROMPT
+PROMPT === FIM DO ARQUIVO 2TDSX_2024_CodigoSql_Integrantes.sql ===
