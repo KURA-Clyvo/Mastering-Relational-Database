@@ -1652,19 +1652,26 @@ IS
 
     -- TRUE se qualquer keyword da lista (delimitada por '|') e substring do texto.
     -- Equivale ao loop de keywords com `break` do Python: para no 1o match.
+    -- Termino pelo WHILE v_rest IS NOT NULL: quando a lista acaba, o SUBSTR
+    -- devolve NULL e o laco sai. (Sem o trailing '|' -- a ultima keyword cai no
+    -- ramo v_pos = 0.)
     FUNCTION cat_bate (p_txt IN VARCHAR2, p_kws IN VARCHAR2) RETURN BOOLEAN IS
-        v_rest VARCHAR2(4000) := p_kws || '|';
+        v_rest VARCHAR2(4000) := p_kws;
         v_pos  PLS_INTEGER;
         v_kw   VARCHAR2(200);
     BEGIN
-        LOOP
+        WHILE v_rest IS NOT NULL LOOP
             v_pos := INSTR(v_rest, '|');
-            EXIT WHEN v_pos = 0;
-            v_kw := SUBSTR(v_rest, 1, v_pos - 1);
+            IF v_pos = 0 THEN
+                v_kw   := v_rest;                    -- ultima keyword (sem '|')
+                v_rest := NULL;
+            ELSE
+                v_kw   := SUBSTR(v_rest, 1, v_pos - 1);
+                v_rest := SUBSTR(v_rest, v_pos + 1); -- pode virar NULL -> sai do WHILE
+            END IF;
             IF v_kw IS NOT NULL AND INSTR(p_txt, v_kw) > 0 THEN
                 RETURN TRUE;
             END IF;
-            v_rest := SUBSTR(v_rest, v_pos + 1);
         END LOOP;
         RETURN FALSE;
     END cat_bate;
