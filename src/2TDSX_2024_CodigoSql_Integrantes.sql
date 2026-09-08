@@ -1692,6 +1692,182 @@ END PRC_LISTAR_COBRANCAS_JSON;
 PROMPT --> PRC_LISTAR_COBRANCAS_JSON compilada
 SHOW ERRORS PROCEDURE PRC_LISTAR_COBRANCAS_JSON
 
-PROMPT === BLOCO 9: PRC_LISTAR_COBRANCAS_JSON criada (PRC_RELATORIO_COBRANCAS vem na SD-05) ===
+PROMPT === BLOCO 9.1: PRC_LISTAR_COBRANCAS_JSON criada ===
+
+-- ---------------------------------------------------------------------------
+-- 9.2  PRC_RELATORIO_COBRANCAS  (Procedimento 2 da Sprint 3 - 15 pts)
+--
+-- O QUE FAZ: le a tabela de FATOS COBRANCA e imprime um relatorio totalizado
+-- com TRES niveis: (1) soma por COMBINACAO completa das categoricas
+-- (ID_CLINICA, DS_FORMA_PAGAMENTO); (2) SUB TOTAL por grupo da 1a categoria
+-- (ID_CLINICA); (3) TOTAL GERAL ao final.
+--
+-- SOMA 100% MANUAL: o cursor traz LINHAS DE DETALHE (cada COBRANCA), sem
+-- clausula de agrupamento e sem nenhuma funcao de agregacao. Os recursos
+-- automaticos de subtotalizacao multinivel do Oracle (os operadores que a
+-- rubrica proibe nominalmente) NAO sao usados -- valem 30 pts no conjunto.
+-- Toda a totalizacao e feita em 3 acumuladores PL/SQL (v_soma_comb,
+-- v_sub_clinica, v_total_geral) por QUEBRA DE GRUPO.
+--
+-- DUAS QUEBRAS DE GRUPO:
+--   * muda DS_FORMA_PAGAMENTO  -> emite a linha da combinacao acumulada
+--   * muda ID_CLINICA          -> emite a linha "Sub Total" da clinica anterior
+--
+-- O ULTIMO GRUPO E EMITIDO FORA DO LOOP: nao existe proxima iteracao para
+-- detectar a quebra da ultima combinacao / do ultimo subtotal. Depois do loop,
+-- emite-se a ultima combinacao, o ultimo Sub Total e o Total Geral.
+--
+-- LAYOUT (formato fixo, exigido pela rubrica - imagem da p. 26):
+--   * larguras FIXAS, ASCII PURO (nada de +---+, caixa, blocos ou acentos).
+--   * a coluna numerica termina no MESMO offset de caractere (coluna 43) nas
+--     TRES formas de linha: detalhe, Sub Total e Total Geral.
+--   * nas linhas Sub Total / Total Geral as colunas categoricas ficam
+--     LITERALMENTE VAZIAS (o texto "Sub Total"/"Total Geral" e um rotulo, nao
+--     ha valor de agrupamento; nao se imprime "0" nem espaco formatado no lugar
+--     de ID_CLINICA / DS_FORMA_PAGAMENTO).
+--   * COALESCE(DS_FORMA_PAGAMENTO, '(nao informado)') no cursor blinda contra o
+--     nullable (a carga garante nao-nulo, mas a coluna aceita null).
+--
+-- 3 EXCECOES DISTINTAS: NO_DATA_FOUND (clinica do filtro inexistente/inativa, ou
+-- nenhuma cobranca), VALUE_ERROR, OTHERS. Padrao kura_req1
+-- (ROLLBACK -> INSERT LOG_ERRO -> COMMIT -> DBMS_OUTPUT).
+-- ---------------------------------------------------------------------------
+CREATE OR REPLACE PROCEDURE PRC_RELATORIO_COBRANCAS (
+    p_id_clinica IN NUMBER DEFAULT NULL
+) AS
+    c_proc  CONSTANT VARCHAR2(30) := 'PRC_RELATORIO_COBRANCAS';
+    c_larg_val CONSTANT PLS_INTEGER := 12;   -- largura da coluna numerica
+    c_larg_rot CONSTANT PLS_INTEGER := 31;   -- largura do rotulo antes do valor
+    v_cod   NUMBER;
+    v_msg   VARCHAR2(2000);
+    v_chk   NUMBER;
+
+    v_soma_comb    NUMBER := 0;   -- acumulador da combinacao (clinica, forma)
+    v_sub_clinica  NUMBER := 0;   -- acumulador do subtotal da clinica
+    v_total_geral  NUMBER := 0;   -- acumulador do total geral
+    v_cli_ant      NUMBER;
+    v_forma_ant    VARCHAR2(40);
+    v_primeira     BOOLEAN := TRUE;
+    v_qtd          PLS_INTEGER := 0;
+
+    CURSOR c_det IS
+        SELECT c.ID_CLINICA                                       AS id_clinica,
+               COALESCE(c.DS_FORMA_PAGAMENTO, '(nao informado)')  AS forma,
+               c.VL_COBRADO                                       AS valor
+          FROM COBRANCA c
+         WHERE c.ST_ATIVA = 'S'
+           AND (p_id_clinica IS NULL OR c.ID_CLINICA = p_id_clinica)
+         ORDER BY c.ID_CLINICA, COALESCE(c.DS_FORMA_PAGAMENTO, '(nao informado)');
+
+    -- formata um numero com ponto decimal fixo (independe do NLS da sessao)
+    FUNCTION val_txt (p_num IN NUMBER) RETURN VARCHAR2 IS
+    BEGIN
+        RETURN TO_CHAR(p_num, 'FM99999990.00', 'NLS_NUMERIC_CHARACTERS=''.,''');
+    END val_txt;
+
+    -- linha de DETALHE: clinica (dir.) + forma (esq.) + valor (dir., col 43)
+    PROCEDURE emitir_detalhe (p_cli IN NUMBER, p_forma IN VARCHAR2, p_val IN NUMBER) IS
+    BEGIN
+        DBMS_OUTPUT.PUT_LINE(
+            LPAD(TO_CHAR(p_cli), 9) || '   ' || RPAD(p_forma, 16) || '   '
+            || LPAD(val_txt(p_val), c_larg_val));
+    END emitir_detalhe;
+
+    -- linha de SUB TOTAL: rotulo ocupando o espaco das categoricas (vazias),
+    -- valor no MESMO offset da coluna numerica das linhas de detalhe.
+    PROCEDURE emitir_subtotal (p_val IN NUMBER) IS
+    BEGIN
+        DBMS_OUTPUT.PUT_LINE(
+            RPAD('  Sub Total', c_larg_rot) || LPAD(val_txt(p_val), c_larg_val));
+    END emitir_subtotal;
+
+    PROCEDURE emitir_total (p_val IN NUMBER) IS
+    BEGIN
+        DBMS_OUTPUT.PUT_LINE(
+            RPAD('Total Geral', c_larg_rot) || LPAD(val_txt(p_val), c_larg_val));
+    END emitir_total;
+BEGIN
+    -- valida o filtro ANTES do loop (dispara NO_DATA_FOUND)
+    IF p_id_clinica IS NOT NULL THEN
+        SELECT ID_CLINICA INTO v_chk
+          FROM CLINICA
+         WHERE ID_CLINICA = p_id_clinica AND ST_ATIVA = 'S';
+    END IF;
+
+    -- cabecalho
+    DBMS_OUTPUT.PUT_LINE('==== PRC_RELATORIO_COBRANCAS (clinica: '
+        || NVL(TO_CHAR(p_id_clinica), 'TODAS') || ') ====');
+    DBMS_OUTPUT.PUT_LINE(LPAD('Clinica', 9) || '   ' || RPAD('Forma', 16) || '   '
+        || LPAD('Valor', c_larg_val));
+    DBMS_OUTPUT.PUT_LINE(RPAD('-', 9, '-') || '   ' || RPAD('-', 16, '-') || '   '
+        || RPAD('-', c_larg_val, '-'));
+
+    FOR r IN c_det LOOP
+        -- QUEBRA 1: mudou a combinacao (forma OU clinica) -> emite a combinacao acumulada
+        IF NOT v_primeira AND (r.id_clinica <> v_cli_ant OR r.forma <> v_forma_ant) THEN
+            emitir_detalhe(v_cli_ant, v_forma_ant, v_soma_comb);
+            v_soma_comb := 0;
+        END IF;
+
+        -- QUEBRA 2: mudou a clinica -> emite o Sub Total da clinica anterior
+        IF NOT v_primeira AND r.id_clinica <> v_cli_ant THEN
+            emitir_subtotal(v_sub_clinica);
+            v_sub_clinica := 0;
+        END IF;
+
+        -- acumula (somas manuais)
+        v_soma_comb   := v_soma_comb   + r.valor;
+        v_sub_clinica := v_sub_clinica + r.valor;
+        v_total_geral := v_total_geral + r.valor;
+
+        v_cli_ant   := r.id_clinica;
+        v_forma_ant := r.forma;
+        v_primeira  := FALSE;
+        v_qtd       := v_qtd + 1;
+    END LOOP;
+
+    -- ULTIMO GRUPO: fora do loop, porque nao ha proxima iteracao para detectar a quebra
+    IF v_primeira THEN
+        RAISE NO_DATA_FOUND;   -- cursor vazio
+    END IF;
+
+    emitir_detalhe(v_cli_ant, v_forma_ant, v_soma_comb);   -- ultima combinacao
+    emitir_subtotal(v_sub_clinica);                        -- ultimo Sub Total
+    emitir_total(v_total_geral);                           -- Total Geral
+
+    DBMS_OUTPUT.PUT_LINE('==== ' || v_qtd || ' lancamento(s) totalizado(s) ====');
+EXCEPTION
+    WHEN NO_DATA_FOUND THEN
+        v_cod := SQLCODE; v_msg := SQLERRM;
+        ROLLBACK;
+        INSERT INTO LOG_ERRO (NM_PROCEDURE, NM_USUARIO, NR_CODIGO_ERRO, DS_MENSAGEM_ERRO, DS_PARAMETROS)
+        VALUES (c_proc, USER, NVL(v_cod, 100),
+                'NO_DATA_FOUND: clinica inexistente/inativa ou sem cobrancas. ' || SUBSTR(v_msg, 1, 400),
+                'p_id_clinica=' || NVL(TO_CHAR(p_id_clinica), 'null'));
+        COMMIT;
+        DBMS_OUTPUT.PUT_LINE('[' || c_proc || '] NO_DATA_FOUND -- registrado em LOG_ERRO.');
+    WHEN VALUE_ERROR THEN
+        v_cod := SQLCODE; v_msg := SQLERRM;
+        ROLLBACK;
+        INSERT INTO LOG_ERRO (NM_PROCEDURE, NM_USUARIO, NR_CODIGO_ERRO, DS_MENSAGEM_ERRO, DS_PARAMETROS)
+        VALUES (c_proc, USER, -6502, 'VALUE_ERROR: ' || SUBSTR(v_msg, 1, 400),
+                'p_id_clinica=' || NVL(TO_CHAR(p_id_clinica), 'null'));
+        COMMIT;
+        DBMS_OUTPUT.PUT_LINE('[' || c_proc || '] VALUE_ERROR -- registrado em LOG_ERRO.');
+    WHEN OTHERS THEN
+        v_cod := SQLCODE; v_msg := SQLERRM;
+        ROLLBACK;
+        INSERT INTO LOG_ERRO (NM_PROCEDURE, NM_USUARIO, NR_CODIGO_ERRO, DS_MENSAGEM_ERRO, DS_PARAMETROS)
+        VALUES (c_proc, USER, v_cod, 'OTHERS: ' || SUBSTR(v_msg, 1, 400),
+                'p_id_clinica=' || NVL(TO_CHAR(p_id_clinica), 'null'));
+        COMMIT;
+        DBMS_OUTPUT.PUT_LINE('[' || c_proc || '] OTHERS (' || v_cod || ') -- registrado em LOG_ERRO.');
+END PRC_RELATORIO_COBRANCAS;
+/
+
+PROMPT --> PRC_RELATORIO_COBRANCAS compilada
+SHOW ERRORS PROCEDURE PRC_RELATORIO_COBRANCAS
+
+PROMPT === BLOCO 9.2: PRC_RELATORIO_COBRANCAS criada ===
 PROMPT
-PROMPT === FIM DOS BLOCOS 0-9. Blocos 10-11 nas tasks SD-05..SD-08. ===
+PROMPT === FIM DOS BLOCOS 0-9. Blocos 10-11 nas tasks SD-06..SD-08. ===
