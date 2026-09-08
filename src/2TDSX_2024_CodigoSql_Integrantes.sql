@@ -1565,7 +1565,190 @@ END FN_COBRANCA_JSON;
 PROMPT --> FN_COBRANCA_JSON compilada
 SHOW ERRORS FUNCTION FN_COBRANCA_JSON
 
-PROMPT === BLOCO 8: FN_COBRANCA_JSON criada (FN_CALCULAR_SCORE_URGENCIA vem na SD-06) ===
+PROMPT === BLOCO 8.1: FN_COBRANCA_JSON criada ===
+
+-- ---------------------------------------------------------------------------
+-- 8.2  FN_CALCULAR_SCORE_URGENCIA  (Funcao 2 da Sprint 3 - 15 pts)
+--
+-- O QUE FAZ: recebe o texto de uma mensagem de tutor e devolve o NIVEL de
+-- urgencia ('ALTA' | 'MEDIA' | 'BAIXA'). E o valor que vai para
+-- TRIAGEM_LUNA.DS_NIVEL_URGENCIA.
+--
+-- QUE PROCESSO DO PROJETO ELA SUBSTITUI: o motor de triagem lexico da Luna,
+-- que roda HOJE em producao -- kura-luna-ai/luna/src/ai/triage_engine.py
+-- (classe TriageEngine.classificar) + luna/src/ai/triage_rules.py
+-- (TRIAGE_RULES_VERSION = "1.0"). Trazer a regra para o banco permite
+-- reclassificar historico e classificar na propria carga, sem subir o
+-- servico Python.
+--
+-- COMO O ALGORITMO FUNCIONA (portado 1:1 do Python):
+--   * _POINTS = {ALTA: 10, MEDIA: 3, BAIXA: 1}.
+--   * 3 niveis, nesta ordem: ALTA (5 categorias), MEDIA (4), BAIXA (2).
+--   * Normaliza o texto: minusculas + remocao de acento (TRANSLATE). As
+--     keywords ja estao escritas normalizadas neste arquivo -> a comparacao
+--     e a MESMA dos dois lados (senao diverge no primeiro acento).
+--   * Match por SUBSTRING (INSTR > 0), SEM fronteira de palavra -- exatamente
+--     como o `if _normalize(kw) in normalized_text` do Python. Limite conhecido:
+--     "acidente" (keyword de trauma) casa dentro de "acidentalmente" -> falso
+--     positivo ALTA. Isso e comportamento herdado, citavel na oral.
+--   * Cada CATEGORIA conta UMA vez por nivel (o `break` do Python, linha 66):
+--     a 1a keyword da categoria que casa ja soma os pontos e para.
+--   * O SCORE acumula os pontos de TODOS os niveis com match (nao so o
+--     vencedor): 1 categoria ALTA + 2 BAIXA => 10 + 1 + 1 = 12.
+--   * O NIVEL retornado e o PRIMEIRO nivel (na ordem ALTA>MEDIA>BAIXA) com
+--     qualquer match. Sem match nenhum, ou texto vazio/nulo => 'BAIXA'.
+--
+-- 3 EXCECOES DISTINTAS:
+--   * e_texto_excede_limite (custom) -- verificacao de limite: mensagem de
+--     triagem realista nao passa de 4000 chars; acima disso a funcao rejeita.
+--     E a "verificacao de limites" que a rubrica cita para a Funcao 2.
+--   * VALUE_ERROR -- estouro de buffer / conversao invalida em operacao de string.
+--   * OTHERS -- qualquer outra falha.
+--   Em erro: grava LOG_ERRO (chamada direta, NAO e chamada por trigger) e
+--   RETORNA 'BAIXA' (degrada para o nivel mais baixo -- a coluna destino e
+--   NOT NULL e um humano revisa a fila de baixa urgencia).
+--
+-- 🔴 COMO CHAMAR: porque ela GRAVA em LOG_ERRO no tratamento de erro, esta
+-- funcao deve ser chamada de dentro de PL/SQL (atribuicao a variavel), NUNCA
+-- embutida direto num SELECT nem no SET de um UPDATE -- ali o Oracle proibe DML
+-- e daria ORA-14551 se uma excecao disparasse. O BLOCO 11 (demonstracao)
+-- classifica num loop PL/SQL e so entao faz o UPDATE em TRIAGEM_LUNA.
+-- ---------------------------------------------------------------------------
+CREATE OR REPLACE FUNCTION FN_CALCULAR_SCORE_URGENCIA (
+    p_texto IN VARCHAR2
+) RETURN VARCHAR2
+IS
+    c_fn         CONSTANT VARCHAR2(30)  := 'FN_CALCULAR_SCORE_URGENCIA';
+    c_max_texto  CONSTANT PLS_INTEGER   := 4000;
+    c_pts_alta   CONSTANT PLS_INTEGER   := 10;
+    c_pts_media  CONSTANT PLS_INTEGER   := 3;
+    c_pts_baixa  CONSTANT PLS_INTEGER   := 1;
+
+    e_texto_excede_limite EXCEPTION;
+
+    v_txt    VARCHAR2(4000);
+    v_score  PLS_INTEGER := 0;
+    v_alta   BOOLEAN := FALSE;
+    v_media  BOOLEAN := FALSE;
+    v_baixa  BOOLEAN := FALSE;
+    v_nivel  VARCHAR2(10);
+    v_cod    NUMBER;
+    v_msg    VARCHAR2(2000);
+
+    -- normalizacao: minusculas + remocao de acento. MESMA regra do _normalize
+    -- do Python (NFKD + drop combining) para o conjunto pt-BR.
+    -- O 1o argumento do TRANSLATE e montado por UNISTR (\00E1 = 'a com acento
+    -- agudo', etc.) para NAO depender da codificacao com que o arquivo .sql e
+    -- aberto -- a fonte aqui e 100% ASCII.
+    --   a: E1 E0 E2 E3 E4 | e: E9 E8 EA EB | i: ED EC EE EF
+    --   o: F3 F2 F4 F5 F6 | u: FA F9 FB FC | c: E7
+    FUNCTION f_normalizar (p_in IN VARCHAR2) RETURN VARCHAR2 IS
+    BEGIN
+        RETURN TRANSLATE(
+            LOWER(p_in),
+            UNISTR('\00E1\00E0\00E2\00E3\00E4\00E9\00E8\00EA\00EB\00ED\00EC\00EE\00EF\00F3\00F2\00F4\00F5\00F6\00FA\00F9\00FB\00FC\00E7'),
+            'aaaaaeeeeiiiiooooouuuuc');
+    END f_normalizar;
+
+    -- TRUE se qualquer keyword da lista (delimitada por '|') e substring do texto.
+    -- Equivale ao loop de keywords com `break` do Python: para no 1o match.
+    FUNCTION cat_bate (p_txt IN VARCHAR2, p_kws IN VARCHAR2) RETURN BOOLEAN IS
+        v_rest VARCHAR2(4000) := p_kws || '|';
+        v_pos  PLS_INTEGER;
+        v_kw   VARCHAR2(200);
+    BEGIN
+        LOOP
+            v_pos := INSTR(v_rest, '|');
+            EXIT WHEN v_pos = 0;
+            v_kw := SUBSTR(v_rest, 1, v_pos - 1);
+            IF v_kw IS NOT NULL AND INSTR(p_txt, v_kw) > 0 THEN
+                RETURN TRUE;
+            END IF;
+            v_rest := SUBSTR(v_rest, v_pos + 1);
+        END LOOP;
+        RETURN FALSE;
+    END cat_bate;
+BEGIN
+    -- texto vazio / nulo / so espacos => 'BAIXA' (igual ao `if not texto.strip()`)
+    IF p_texto IS NULL OR TRIM(p_texto) IS NULL THEN
+        RETURN 'BAIXA';
+    END IF;
+
+    -- verificacao de limite (excecao 1)
+    IF LENGTH(p_texto) > c_max_texto THEN
+        RAISE e_texto_excede_limite;
+    END IF;
+
+    v_txt := f_normalizar(p_texto);
+
+    -- ===== NIVEL ALTA (5 categorias, 10 pts cada categoria que casa) =====
+    IF cat_bate(v_txt, 'convulsao|convulsionando|convulsoes|tremendo muito|espasmo|desmaiou|perdeu a consciencia')
+        THEN v_score := v_score + c_pts_alta; v_alta := TRUE; END IF;
+    IF cat_bate(v_txt, 'sangrando|sangue|hemorragia|sangramento|ferida aberta')
+        THEN v_score := v_score + c_pts_alta; v_alta := TRUE; END IF;
+    IF cat_bate(v_txt, 'envenenado|envenenamento|veneno|intoxicado|intoxicacao|comeu produto|ingeriu produto|rato veneno|raticida')
+        THEN v_score := v_score + c_pts_alta; v_alta := TRUE; END IF;
+    IF cat_bate(v_txt, 'dificuldade respirar|nao respira|respiracao dificil|ofegante|sufocando|engasgou')
+        THEN v_score := v_score + c_pts_alta; v_alta := TRUE; END IF;
+    IF cat_bate(v_txt, 'atropelado|atropelamento|caiu de altura|bateu a cabeca|fratura|osso quebrado|acidente')
+        THEN v_score := v_score + c_pts_alta; v_alta := TRUE; END IF;
+
+    -- ===== NIVEL MEDIA (4 categorias, 3 pts cada) =====
+    IF cat_bate(v_txt, 'vomitando|vomitou|vomito|enjoo|nausea')
+        THEN v_score := v_score + c_pts_media; v_media := TRUE; END IF;
+    IF cat_bate(v_txt, 'diarreia|fezes moles|coco mole|intestino solto')
+        THEN v_score := v_score + c_pts_media; v_media := TRUE; END IF;
+    IF cat_bate(v_txt, 'letargico|sem apetite|nao quer comer|muito quieto|parado demais|fraco|cansado demais')
+        THEN v_score := v_score + c_pts_media; v_media := TRUE; END IF;
+    IF cat_bate(v_txt, 'febre|temperatura alta|quente demais|febril')
+        THEN v_score := v_score + c_pts_media; v_media := TRUE; END IF;
+
+    -- ===== NIVEL BAIXA (2 categorias, 1 pt cada) =====
+    IF cat_bate(v_txt, 'duvida|pergunta|queria saber|como faco|informacao')
+        THEN v_score := v_score + c_pts_baixa; v_baixa := TRUE; END IF;
+    IF cat_bate(v_txt, 'comportamento estranho|latindo muito|miando muito|roendo|arranhando|pulga|carrapato')
+        THEN v_score := v_score + c_pts_baixa; v_baixa := TRUE; END IF;
+
+    -- nivel = primeiro na hierarquia ALTA > MEDIA > BAIXA com qualquer match
+    IF    v_alta  THEN v_nivel := 'ALTA';
+    ELSIF v_media THEN v_nivel := 'MEDIA';
+    ELSE               v_nivel := 'BAIXA';   -- inclui o caso "nenhum match"
+    END IF;
+
+    DBMS_OUTPUT.PUT_LINE('[' || c_fn || '] score=' || v_score || ' -> nivel=' || v_nivel);
+    RETURN v_nivel;
+EXCEPTION
+    WHEN e_texto_excede_limite THEN
+        v_cod := -20001; v_msg := 'texto com ' || LENGTH(p_texto) || ' chars excede o limite de ' || c_max_texto;
+        ROLLBACK;
+        INSERT INTO LOG_ERRO (NM_PROCEDURE, NM_USUARIO, NR_CODIGO_ERRO, DS_MENSAGEM_ERRO, DS_PARAMETROS)
+        VALUES (c_fn, USER, v_cod, 'TEXTO_EXCEDE_LIMITE: ' || v_msg, 'len=' || LENGTH(p_texto));
+        COMMIT;
+        DBMS_OUTPUT.PUT_LINE('[' || c_fn || '] TEXTO_EXCEDE_LIMITE -- registrado em LOG_ERRO. Retorna BAIXA.');
+        RETURN 'BAIXA';
+    WHEN VALUE_ERROR THEN
+        v_cod := SQLCODE; v_msg := SQLERRM;
+        ROLLBACK;
+        INSERT INTO LOG_ERRO (NM_PROCEDURE, NM_USUARIO, NR_CODIGO_ERRO, DS_MENSAGEM_ERRO, DS_PARAMETROS)
+        VALUES (c_fn, USER, -6502, 'VALUE_ERROR: ' || SUBSTR(v_msg, 1, 400), NULL);
+        COMMIT;
+        DBMS_OUTPUT.PUT_LINE('[' || c_fn || '] VALUE_ERROR -- registrado em LOG_ERRO. Retorna BAIXA.');
+        RETURN 'BAIXA';
+    WHEN OTHERS THEN
+        v_cod := SQLCODE; v_msg := SQLERRM;
+        ROLLBACK;
+        INSERT INTO LOG_ERRO (NM_PROCEDURE, NM_USUARIO, NR_CODIGO_ERRO, DS_MENSAGEM_ERRO, DS_PARAMETROS)
+        VALUES (c_fn, USER, v_cod, 'OTHERS: ' || SUBSTR(v_msg, 1, 400), NULL);
+        COMMIT;
+        DBMS_OUTPUT.PUT_LINE('[' || c_fn || '] OTHERS (' || v_cod || ') -- registrado em LOG_ERRO. Retorna BAIXA.');
+        RETURN 'BAIXA';
+END FN_CALCULAR_SCORE_URGENCIA;
+/
+
+PROMPT --> FN_CALCULAR_SCORE_URGENCIA compilada
+SHOW ERRORS FUNCTION FN_CALCULAR_SCORE_URGENCIA
+
+PROMPT === BLOCO 8.2: FN_CALCULAR_SCORE_URGENCIA criada ===
 
 
 -- #############################################################################
