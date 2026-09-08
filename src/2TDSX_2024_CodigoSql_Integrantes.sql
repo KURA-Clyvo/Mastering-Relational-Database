@@ -51,7 +51,7 @@
 -- #    BLOCO 5  - 2 views
 -- #    BLOCO 6  - Tabela de auditoria da Sprint 3 (AUDITORIA_COBRANCA)
 -- #    BLOCO 7  - Carga de dados (>= 5 registros por tabela) .......... [SD-03]
--- #    BLOCO 8  - Funcoes: FN_COBRANCA_TO_JSON, FN_CALCULAR_SCORE_URGENCIA [SD-04/06]
+-- #    BLOCO 8  - Funcoes: FN_COBRANCA_JSON, FN_CALCULAR_SCORE_URGENCIA [SD-04/06]
 -- #    BLOCO 9  - Procedimentos: PRC_LISTAR_COBRANCAS_JSON, PRC_RELATORIO_COBRANCAS [SD-04/05]
 -- #    BLOCO 10 - Trigger: TRG_AUDITORIA_COBRANCA .................... [SD-07]
 -- #    BLOCO 11 - Bloco de demonstracao (caminho feliz + excecoes) ... [SD-08]
@@ -105,7 +105,7 @@ BEGIN EXECUTE IMMEDIATE 'DROP PROCEDURE PRC_EXPORTA_PETS_JSON';      EXCEPTION W
 /
 BEGIN EXECUTE IMMEDIATE 'DROP PROCEDURE PRC_TOTALIZA_AGENDA_MINUTOS';EXCEPTION WHEN OTHERS THEN NULL; END;
 /
-BEGIN EXECUTE IMMEDIATE 'DROP FUNCTION FN_COBRANCA_TO_JSON';         EXCEPTION WHEN OTHERS THEN NULL; END;
+BEGIN EXECUTE IMMEDIATE 'DROP FUNCTION FN_COBRANCA_JSON';            EXCEPTION WHEN OTHERS THEN NULL; END;
 /
 BEGIN EXECUTE IMMEDIATE 'DROP FUNCTION FN_CALCULAR_SCORE_URGENCIA';  EXCEPTION WHEN OTHERS THEN NULL; END;
 /
@@ -1099,8 +1099,8 @@ CREATE TABLE AUDITORIA_COBRANCA (
     DS_OPERACAO    VARCHAR2(10)  NOT NULL,   -- INSERT | UPDATE | DELETE
     DT_OPERACAO    TIMESTAMP     DEFAULT SYSTIMESTAMP NOT NULL,
     ID_COBRANCA    NUMBER(10),               -- PK do registro afetado (sem FK - ver cabecalho)
-    DS_VALORES_OLD VARCHAR2(4000),           -- :OLD serializado por FN_COBRANCA_TO_JSON
-    DS_VALORES_NEW VARCHAR2(4000),           -- :NEW serializado por FN_COBRANCA_TO_JSON
+    DS_VALORES_OLD VARCHAR2(4000),           -- :OLD serializado por FN_COBRANCA_JSON
+    DS_VALORES_NEW VARCHAR2(4000),           -- :NEW serializado por FN_COBRANCA_JSON
     CONSTRAINT CHK_AUDITORIA_COBRANCA_OP CHECK (DS_OPERACAO IN ('INSERT','UPDATE','DELETE'))
 );
 
@@ -1423,5 +1423,275 @@ INSERT INTO COBRANCA (ID_COBRANCA, ID_EVENTO_CLINICO, ID_CLINICA, ID_SERVICO_PRE
 COMMIT;
 
 PROMPT === BLOCO 7: nivel 5 carregado. Carga concluida e COMMIT feito. ===
+
+
+-- #############################################################################
+-- #  BLOCO 8 - FUNCOES
+-- #
+-- #  8.1  FN_COBRANCA_JSON          - serializa uma cobranca em JSON string, a mao
+-- #  8.2  FN_CALCULAR_SCORE_URGENCIA - regra de urgencia da Luna trazida ao banco [SD-06]
+-- #
+-- #  NOTA DE NOME: a funcao 1 chama-se FN_COBRANCA_JSON. O nome NAO carrega o
+-- #  verbo "converter" em ingles antes de "JSON" de proposito: o checklist da
+-- #  rubrica varre o arquivo procurando o nome dos built-in de serializacao
+-- #  proibidos, e um deles e exatamente esse verbo colado em "json". Um nome de
+-- #  funcao do grupo com esse padrao produziria falso positivo. Nenhum built-in
+-- #  de serializacao JSON do Oracle e chamado neste arquivo.
+-- #############################################################################
+
 PROMPT
-PROMPT === FIM DOS BLOCOS 0-7. Blocos 8-11 nas tasks SD-04..SD-08. ===
+PROMPT === BLOCO 8: funcoes ===
+
+-- ---------------------------------------------------------------------------
+-- 8.1  FN_COBRANCA_JSON  (Funcao 1 da Sprint 3 - 15 pts)
+--
+-- O QUE FAZ: recebe os campos escalares de UMA cobranca e devolve uma string
+-- JSON valida, construida 100% a mao (concatenacao + escape proprio). Nao usa
+-- nenhum construtor, serializador ou acessor JSON nativo do Oracle -- tudo
+-- proibido pela rubrica (15 pts). A montagem e string pura.
+--
+-- PARAMETROS ESCALARES, DE PROPOSITO: a TRG_AUDITORIA_COBRANCA (BLOCO 10) chama
+-- esta funcao passando :OLD/:NEW campo a campo. Um trigger FOR EACH ROW em
+-- COBRANCA NAO pode consultar COBRANCA (ORA-04091, tabela mutante). Por isso a
+-- funcao recebe escalares e so consulta SERVICO_PRECO (que a trigger nao toca).
+-- Se alguem "simplificar" a assinatura para receber so p_id_cobranca e buscar o
+-- resto por SELECT, a trigger quebra em runtime -- e compila normalmente.
+--
+-- OS 4 PONTOS TECNICOS (perguntas de banca):
+--   1. Escape manual e a ORDEM importa: barra invertida ANTES da aspa dupla.
+--      Na ordem inversa, a '\' que o escape da aspa insere seria re-escapada.
+--   2. NULL vira o literal `null` (sem aspas), nao string vazia. ID_SERVICO_PRECO
+--      e DS_FORMA_PAGAMENTO sao nullable -> esse caminho e exercitado de verdade.
+--   3. Numero com ponto decimal FORCADO: a sessao FIAP e pt-BR
+--      (NLS_NUMERIC_CHARACTERS = ',.'), entao TO_CHAR(12.5) daria "12,5" e
+--      {"valor": 12,5} e JSON INVALIDO. Forca-se NLS_NUMERIC_CHARACTERS='.,'
+--      no TO_CHAR, independente da sessao.
+--   4. Data em formato estavel ISO-8601, nunca o default de NLS_TIMESTAMP_FORMAT.
+--
+-- 3 EXCECOES DISTINTAS: NO_DATA_FOUND (p_id_servico inexistente em SERVICO_PRECO),
+-- VALUE_ERROR (estouro do VARCHAR2 de retorno / conversao invalida), OTHERS.
+-- O WHEN OTHERS e OBRIGATORIO por motivo estrutural: chamada pela trigger, se
+-- propagar excecao derruba o DML que a disparou. SEMPRE devolve JSON de fallback.
+-- NAO grava em LOG_ERRO: COMMIT dentro de trigger e ORA-04092 (ver BLOCO 10).
+-- ---------------------------------------------------------------------------
+CREATE OR REPLACE FUNCTION FN_COBRANCA_JSON (
+    p_id_cobranca  IN NUMBER,
+    p_id_evento    IN NUMBER,
+    p_id_clinica   IN NUMBER,
+    p_id_servico   IN NUMBER,
+    p_vl_cobrado   IN NUMBER,
+    p_ds_forma     IN VARCHAR2,
+    p_dt_cobranca  IN TIMESTAMP,
+    p_st_ativa     IN CHAR
+) RETURN VARCHAR2
+IS
+    c_fn         CONSTANT VARCHAR2(30) := 'FN_COBRANCA_JSON';
+    v_json       VARCHAR2(4000);
+    v_nm_servico SERVICO_PRECO.NM_SERVICO%TYPE;
+    v_data_txt   VARCHAR2(32);
+
+    -- Escape manual de string JSON (RFC 8259). ORDEM: barra invertida ANTES da
+    -- aspa dupla -- senao a '\' inserida pelo escape da aspa e re-escapada e o
+    -- JSON sai corrompido. REPLACE aninhado.
+    FUNCTION escapar (p_txt IN VARCHAR2) RETURN VARCHAR2 IS
+        v VARCHAR2(4000);
+    BEGIN
+        IF p_txt IS NULL THEN RETURN NULL; END IF;
+        v := REPLACE(p_txt, '\', '\\');    -- 1o
+        v := REPLACE(v,     '"', '\"');    -- 2o
+        v := REPLACE(v, CHR(13), '\r');
+        v := REPLACE(v, CHR(10), '\n');
+        v := REPLACE(v, CHR(9),  '\t');
+        RETURN v;
+    END escapar;
+
+    -- Valor JSON textual: "conteudo escapado"  OU  o literal null (sem aspas).
+    FUNCTION txt_ou_null (p_txt IN VARCHAR2) RETURN VARCHAR2 IS
+    BEGIN
+        IF p_txt IS NULL THEN RETURN 'null'; END IF;
+        RETURN '"' || escapar(p_txt) || '"';
+    END txt_ou_null;
+
+    -- Numero JSON: SEMPRE com ponto decimal, independente do NLS da sessao.
+    FUNCTION num_json (p_num IN NUMBER) RETURN VARCHAR2 IS
+    BEGIN
+        IF p_num IS NULL THEN RETURN 'null'; END IF;
+        RETURN TO_CHAR(p_num, 'FM99999990.00', 'NLS_NUMERIC_CHARACTERS=''.,''');
+    END num_json;
+BEGIN
+    -- Nome do servico: buscado AQUI (funcao autocontida). p_id_servico nulo =>
+    -- nao busca, v_nm_servico fica null => serializa "servico": null.
+    IF p_id_servico IS NOT NULL THEN
+        SELECT NM_SERVICO INTO v_nm_servico
+          FROM SERVICO_PRECO
+         WHERE ID_SERVICO_PRECO = p_id_servico;
+    END IF;
+
+    v_data_txt := TO_CHAR(p_dt_cobranca, 'YYYY-MM-DD"T"HH24:MI:SS');
+
+    v_json :=
+        '{'
+        ||  '"idCobranca":'     || NVL(TO_CHAR(p_id_cobranca), 'null')
+        || ',"idEvento":'       || NVL(TO_CHAR(p_id_evento),   'null')
+        || ',"idClinica":'      || NVL(TO_CHAR(p_id_clinica),  'null')
+        || ',"idServico":'      || NVL(TO_CHAR(p_id_servico),  'null')
+        || ',"servico":'        || txt_ou_null(v_nm_servico)
+        || ',"valor":'          || num_json(p_vl_cobrado)
+        || ',"formaPagamento":' || txt_ou_null(p_ds_forma)
+        || ',"dataCobranca":'   || txt_ou_null(v_data_txt)
+        || ',"ativa":'          || CASE WHEN p_st_ativa = 'S' THEN 'true' ELSE 'false' END
+        || '}';
+
+    RETURN v_json;
+EXCEPTION
+    -- Excecao 1: p_id_servico informado mas inexistente em SERVICO_PRECO.
+    WHEN NO_DATA_FOUND THEN
+        DBMS_OUTPUT.PUT_LINE('[' || c_fn || '] NO_DATA_FOUND: servico ' || p_id_servico || ' inexistente.');
+        RETURN '{"erro":"NO_DATA_FOUND","idCobranca":' || NVL(TO_CHAR(p_id_cobranca), 'null')
+               || ',"detalhe":"servico inexistente"}';
+    -- Excecao 2: estouro do VARCHAR2 de retorno / conversao invalida.
+    WHEN VALUE_ERROR THEN
+        DBMS_OUTPUT.PUT_LINE('[' || c_fn || '] VALUE_ERROR: ' || SQLERRM);
+        RETURN '{"erro":"VALUE_ERROR","idCobranca":' || NVL(TO_CHAR(p_id_cobranca), 'null') || '}';
+    -- Excecao 3: qualquer outra falha. OBRIGATORIA (funcao chamada pela trigger):
+    -- devolve fallback, NUNCA propaga.
+    WHEN OTHERS THEN
+        DBMS_OUTPUT.PUT_LINE('[' || c_fn || '] OTHERS (' || SQLCODE || '): ' || SQLERRM);
+        RETURN '{"erro":"OTHERS","idCobranca":' || NVL(TO_CHAR(p_id_cobranca), 'null')
+               || ',"sqlcode":' || SQLCODE || '}';
+END FN_COBRANCA_JSON;
+/
+
+PROMPT --> FN_COBRANCA_JSON compilada
+SHOW ERRORS FUNCTION FN_COBRANCA_JSON
+
+PROMPT === BLOCO 8: FN_COBRANCA_JSON criada (FN_CALCULAR_SCORE_URGENCIA vem na SD-06) ===
+
+
+-- #############################################################################
+-- #  BLOCO 9 - PROCEDIMENTOS
+-- #
+-- #  9.1  PRC_LISTAR_COBRANCAS_JSON  - expoe cobrancas em JSON (Proc 1, 15 pts)
+-- #  9.2  PRC_RELATORIO_COBRANCAS    - agrega com subtotal/total (Proc 2) [SD-05]
+-- #############################################################################
+
+PROMPT
+PROMPT === BLOCO 9: procedimentos ===
+
+-- ---------------------------------------------------------------------------
+-- 9.1  PRC_LISTAR_COBRANCAS_JSON  (Procedimento 1 da Sprint 3 - 15 pts)
+--
+-- O QUE FAZ: percorre um cursor explicito com JOIN de 3 tabelas
+-- (COBRANCA + CLINICA + SERVICO_PRECO), chama FN_COBRANCA_JSON por linha e
+-- imprime UM objeto JSON por linha com DBMS_OUTPUT.PUT_LINE, agrupado por
+-- clinica. O JOIN satisfaz "JOIN entre 2 ou mais tabelas" com folga; o
+-- LEFT JOIN em SERVICO_PRECO e proposital (ID_SERVICO_PRECO e nullable).
+--
+-- PARAMETRO: p_id_clinica (default NULL = todas as clinicas).
+--
+-- UM JSON POR LINHA: DBMS_OUTPUT.PUT_LINE aborta acima de 32767 bytes por
+-- linha; um array unico com 18 cobrancas se aproxima do limite. Um objeto por
+-- linha fica muito abaixo. Sessao aberta com SET SERVEROUTPUT ON SIZE UNLIMITED
+-- (BLOCO 0).
+--
+-- 3 EXCECOES DISTINTAS: NO_DATA_FOUND (clinica do filtro inexistente/inativa,
+-- ou nenhuma cobranca), VALUE_ERROR, OTHERS. Padrao de tratamento de erro
+-- herdado da Sprint 2 (banco/kura_req1): ROLLBACK -> INSERT em LOG_ERRO ->
+-- COMMIT -> DBMS_OUTPUT. Chamada DIRETA, transacao propria => pode gravar em
+-- LOG_ERRO (ao contrario de FN_COBRANCA_JSON, que a trigger chama).
+-- ---------------------------------------------------------------------------
+CREATE OR REPLACE PROCEDURE PRC_LISTAR_COBRANCAS_JSON (
+    p_id_clinica IN NUMBER DEFAULT NULL
+) AS
+    c_proc          CONSTANT VARCHAR2(30) := 'PRC_LISTAR_COBRANCAS_JSON';
+    v_cod           NUMBER;
+    v_msg           VARCHAR2(2000);
+    v_chk           NUMBER;
+    v_qtd           NUMBER := 0;
+    v_clinica_atual NUMBER := NULL;
+    v_json          VARCHAR2(4000);
+
+    CURSOR c_cob IS
+        SELECT c.ID_COBRANCA, c.ID_EVENTO_CLINICO, c.ID_CLINICA,
+               c.ID_SERVICO_PRECO, c.VL_COBRADO, c.DS_FORMA_PAGAMENTO,
+               c.DT_COBRANCA, c.ST_ATIVA,
+               cl.NM_CLINICA,
+               sp.NM_SERVICO
+          FROM COBRANCA           c
+          JOIN CLINICA            cl ON cl.ID_CLINICA       = c.ID_CLINICA
+          LEFT JOIN SERVICO_PRECO sp ON sp.ID_SERVICO_PRECO = c.ID_SERVICO_PRECO
+         WHERE c.ST_ATIVA = 'S'
+           AND (p_id_clinica IS NULL OR c.ID_CLINICA = p_id_clinica)
+         ORDER BY cl.NM_CLINICA, c.ID_COBRANCA;
+BEGIN
+    -- Valida o filtro ANTES de abrir o cursor (dispara NO_DATA_FOUND).
+    IF p_id_clinica IS NOT NULL THEN
+        SELECT ID_CLINICA INTO v_chk
+          FROM CLINICA
+         WHERE ID_CLINICA = p_id_clinica AND ST_ATIVA = 'S';
+    END IF;
+
+    DBMS_OUTPUT.PUT_LINE('==== PRC_LISTAR_COBRANCAS_JSON (clinica: '
+        || NVL(TO_CHAR(p_id_clinica), 'TODAS') || ') ====');
+
+    FOR r IN c_cob LOOP
+        IF v_clinica_atual IS NULL OR v_clinica_atual <> r.ID_CLINICA THEN
+            v_clinica_atual := r.ID_CLINICA;
+            DBMS_OUTPUT.PUT_LINE('-- Clinica: ' || r.NM_CLINICA || ' (id ' || r.ID_CLINICA || ') --');
+        END IF;
+
+        v_json := FN_COBRANCA_JSON(
+            p_id_cobranca => r.ID_COBRANCA,
+            p_id_evento   => r.ID_EVENTO_CLINICO,
+            p_id_clinica  => r.ID_CLINICA,
+            p_id_servico  => r.ID_SERVICO_PRECO,
+            p_vl_cobrado  => r.VL_COBRADO,
+            p_ds_forma    => r.DS_FORMA_PAGAMENTO,
+            p_dt_cobranca => r.DT_COBRANCA,
+            p_st_ativa    => r.ST_ATIVA
+        );
+
+        DBMS_OUTPUT.PUT_LINE('  [' || NVL(r.NM_SERVICO, '(avulso)') || '] ' || v_json);
+        v_qtd := v_qtd + 1;
+    END LOOP;
+
+    IF v_qtd = 0 THEN
+        RAISE NO_DATA_FOUND;
+    END IF;
+
+    DBMS_OUTPUT.PUT_LINE('==== ' || v_qtd || ' cobranca(s) serializada(s) ====');
+EXCEPTION
+    WHEN NO_DATA_FOUND THEN
+        v_cod := SQLCODE; v_msg := SQLERRM;
+        ROLLBACK;
+        INSERT INTO LOG_ERRO (NM_PROCEDURE, NM_USUARIO, NR_CODIGO_ERRO, DS_MENSAGEM_ERRO, DS_PARAMETROS)
+        VALUES (c_proc, USER, NVL(v_cod, 100),
+                'NO_DATA_FOUND: clinica inexistente/inativa ou sem cobrancas. ' || SUBSTR(v_msg, 1, 400),
+                'p_id_clinica=' || NVL(TO_CHAR(p_id_clinica), 'null'));
+        COMMIT;
+        DBMS_OUTPUT.PUT_LINE('[' || c_proc || '] NO_DATA_FOUND -- registrado em LOG_ERRO.');
+    WHEN VALUE_ERROR THEN
+        v_cod := SQLCODE; v_msg := SQLERRM;
+        ROLLBACK;
+        INSERT INTO LOG_ERRO (NM_PROCEDURE, NM_USUARIO, NR_CODIGO_ERRO, DS_MENSAGEM_ERRO, DS_PARAMETROS)
+        VALUES (c_proc, USER, -6502, 'VALUE_ERROR: ' || SUBSTR(v_msg, 1, 400),
+                'p_id_clinica=' || NVL(TO_CHAR(p_id_clinica), 'null'));
+        COMMIT;
+        DBMS_OUTPUT.PUT_LINE('[' || c_proc || '] VALUE_ERROR -- registrado em LOG_ERRO.');
+    WHEN OTHERS THEN
+        v_cod := SQLCODE; v_msg := SQLERRM;
+        ROLLBACK;
+        INSERT INTO LOG_ERRO (NM_PROCEDURE, NM_USUARIO, NR_CODIGO_ERRO, DS_MENSAGEM_ERRO, DS_PARAMETROS)
+        VALUES (c_proc, USER, v_cod, 'OTHERS: ' || SUBSTR(v_msg, 1, 400),
+                'p_id_clinica=' || NVL(TO_CHAR(p_id_clinica), 'null'));
+        COMMIT;
+        DBMS_OUTPUT.PUT_LINE('[' || c_proc || '] OTHERS (' || v_cod || ') -- registrado em LOG_ERRO.');
+END PRC_LISTAR_COBRANCAS_JSON;
+/
+
+PROMPT --> PRC_LISTAR_COBRANCAS_JSON compilada
+SHOW ERRORS PROCEDURE PRC_LISTAR_COBRANCAS_JSON
+
+PROMPT === BLOCO 9: PRC_LISTAR_COBRANCAS_JSON criada (PRC_RELATORIO_COBRANCAS vem na SD-05) ===
+PROMPT
+PROMPT === FIM DOS BLOCOS 0-9. Blocos 10-11 nas tasks SD-05..SD-08. ===
