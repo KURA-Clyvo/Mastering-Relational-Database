@@ -1,5 +1,5 @@
 -- #############################################################################
--- #  2TDSX_2024_CodigoSql_Integrantes.sql
+-- #  banco_kura_final.sql
 -- #  KURA - Sistema de Gestao de Continuidade Veterinaria (Clyvo Vet)
 -- #  FIAP Challenge 2026 - Sprint 3
 -- #  Disciplina: Mastering Relational and Non-Relational Database
@@ -64,8 +64,9 @@ SET SERVEROUTPUT ON SIZE UNLIMITED
 SET DEFINE OFF
 SET VERIFY OFF
 SET FEEDBACK ON
-SET LINESIZE 200
+SET LINESIZE 400
 SET PAGESIZE 1000
+SET TRIMSPOOL ON
 WHENEVER SQLERROR CONTINUE
 
 
@@ -2230,9 +2231,10 @@ BEGIN
     caso('Tenho uma duvida sobre a racao do filhote',               'BAIXA');
     caso('Ele esta otimo, so passei para agradecer o atendimento',  'BAIXA');
     caso('',                                                        'BAIXA');
-    caso('meu cao teve convulsao, esta com febre e uma duvida',     'ALTA (score 14, acumula)');
+    caso('meu cao teve convulsao, esta com febre e uma duvida',     'ALTA');
 END;
 /
+PROMPT (o ultimo caso tem score=14 = 10+3+1: ALTA+MEDIA+BAIXA acumulam, mas o nivel e o mais grave)
 PROMPT
 PROMPT ==== 11.8  FN_CALCULAR_SCORE_URGENCIA -- excecao tratada (texto acima do limite -> LOG_ERRO) ====
 DECLARE
@@ -2294,8 +2296,8 @@ PROMPT ==== 11.11  AUDITORIA_COBRANCA -- trilha com :OLD e :NEW lado a lado ====
 SELECT ID_AUDITORIA, NM_USUARIO, DS_OPERACAO,
        TO_CHAR(DT_OPERACAO, 'YYYY-MM-DD HH24:MI:SS') AS quando,
        ID_COBRANCA,
-       NVL(SUBSTR(DS_VALORES_OLD, 1, 90), '(nulo)') AS old_90,
-       NVL(SUBSTR(DS_VALORES_NEW, 1, 90), '(nulo)') AS new_90
+       NVL(SUBSTR(DS_VALORES_OLD, 1, 120), '(nulo)') AS valores_old,
+       NVL(SUBSTR(DS_VALORES_NEW, 1, 120), '(nulo)') AS valores_new
   FROM AUDITORIA_COBRANCA
  ORDER BY ID_AUDITORIA;
 
@@ -2334,4 +2336,4 @@ SELECT NM_PROCEDURE, NR_CODIGO_ERRO, DS_PARAMETROS,
 PROMPT
 PROMPT #########################  FIM DA DEMONSTRACAO (BLOCO 11)  #########################
 PROMPT
-PROMPT === FIM DO ARQUIVO 2TDSX_2024_CodigoSql_Integrantes.sql ===
+PROMPT === FIM DO ARQUIVO banco_kura_final.sql ===
