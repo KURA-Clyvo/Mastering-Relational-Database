@@ -1590,8 +1590,9 @@ PROMPT === BLOCO 8.1: FN_COBRANCA_JSON criada ===
 --     e a MESMA dos dois lados (senao diverge no primeiro acento).
 --   * Match por SUBSTRING (INSTR > 0), SEM fronteira de palavra -- exatamente
 --     como o `if _normalize(kw) in normalized_text` do Python. Limite conhecido:
---     "acidente" (keyword de trauma) casa dentro de "acidentalmente" -> falso
---     positivo ALTA. Isso e comportamento herdado, citavel na oral.
+--     "veneno" (keyword de envenenamento) casa dentro de "venenoso" -> um texto
+--     sobre "remedio venenoso" e classificado como ALTA. E comportamento herdado
+--     do motor original (nao trata negacao nem fronteira de palavra), citavel na oral.
 --   * Cada CATEGORIA conta UMA vez por nivel (o `break` do Python, linha 66):
 --     a 1a keyword da categoria que casa ja soma os pontos e para.
 --   * O SCORE acumula os pontos de TODOS os niveis com match (nao so o

@@ -2,8 +2,9 @@
 ## Mastering Relational and Non-Relational Database — FIAP Challenge 2026
 
 > **Fonte deste arquivo:** exportar para **`banco_kura_doc.pdf`** e entregar no portal FIAP
-> junto de **`banco_kura_final.sql`**. Os prints referenciados como `![...](prints/...)` devem
-> ser capturados no SQL Developer (ver §11 e o apêndice) e colocados em `docs/prints/`.
+> junto de **`banco_kura_final.sql`**. As 14 imagens referenciadas como `![...](prints/...)` já
+> estão em `docs/prints/` (capturadas do *Script Output* do SQL Developer); o apêndice §12 mapeia
+> cada uma ao sub-bloco de origem.
 
 ---
 
@@ -202,7 +203,7 @@ trigger é `ORA-04092`.
 
 **Print 1 — caminho feliz (escape de aspas e `null`):**
 
-![print 1 — FN_COBRANCA_JSON caminho feliz](prints/01_fn_cobranca_json_feliz.png)
+![print 1 — FN_COBRANCA_JSON caminho feliz](prints/01_fn_cobranca_json_sucesso.png)
 
 Saída (bloco 11.1):
 
@@ -220,7 +221,7 @@ cobranca 3 (servico nulo)     : {"idCobranca":3,...,"idServico":null,"servico":n
 
 **Print 2 — exceção tratada:**
 
-![print 2 — FN_COBRANCA_JSON exceção](prints/02_fn_cobranca_json_excecao.png)
+![print 2 — FN_COBRANCA_JSON exceção](prints/02_fn_cobranca_json_excecoes.png)
 
 Saída (bloco 11.2):
 
@@ -261,7 +262,7 @@ própria), pode gravar em `LOG_ERRO` — ao contrário de `FN_COBRANCA_JSON`, qu
 
 **Print 3 — saída JSON:**
 
-![print 3 — PRC_LISTAR_COBRANCAS_JSON](prints/03_prc_listar_json.png)
+![print 3 — PRC_LISTAR_COBRANCAS_JSON](prints/03_prc_listar_cobrancas_json.png)
 
 Saída (bloco 11.3, resumo): 18 objetos JSON, agrupados por `-- Clinica: <nome> --`, cada linha
 prefixada pelo nome do serviço (`[Consulta Geral]`, `[(avulso)]` quando `ID_SERVICO_PRECO` é nulo).
@@ -320,7 +321,7 @@ Toda a totalização é feita em **3 acumuladores PL/SQL** (`v_soma_comb`, `v_su
 
 **Print 5 — a saída no formato exigido:**
 
-![print 5 — PRC_RELATORIO_COBRANCAS formato](prints/05_prc_relatorio_formato.png)
+![print 5 — PRC_RELATORIO_COBRANCAS formato](prints/05_prc_relatorio_cobrancas.png)
 
 Saída (bloco 11.5):
 
@@ -409,7 +410,7 @@ degrada para o nível mais baixo, que um humano revisa, já que a coluna destino
 
 **Print 7 — os casos de classificação:**
 
-![print 7 — FN_CALCULAR_SCORE_URGENCIA casos](prints/07_fn_score_casos.png)
+![print 7 — FN_CALCULAR_SCORE_URGENCIA casos](prints/07_fn_calcular_score_urgencia.png)
 
 Saída (bloco 11.7):
 
@@ -429,15 +430,21 @@ retornado é o mais grave (`ALTA`).
 independente do `classificar()` usando as palavras-chave literais do `triage_rules.py` — **7/7
 casos idênticos**.
 
-**Print 8 — exceção tratada + escrita em `TRIAGEM_LUNA`:**
+**Print 8 — exceção tratada (bloco 11.8):**
 
-![print 8 — FN_CALCULAR_SCORE_URGENCIA exceção e UPDATE](prints/08_fn_score_excecao_update.png)
-
-Saída (blocos 11.8 e 11.9):
+![print 8 — FN_CALCULAR_SCORE_URGENCIA exceção](prints/08_fn_score_urgencia_excecao.png)
 
 ```
 [FN_CALCULAR_SCORE_URGENCIA] TEXTO_EXCEDE_LIMITE -- registrado em LOG_ERRO. Retorna BAIXA.
+```
 
+**Print 13 — reclassificação de `TRIAGEM_LUNA` (bloco 11.9):**
+
+![print 13 — UPDATE de TRIAGEM_LUNA.DS_NIVEL_URGENCIA](prints/13_triagem_luna_update.png)
+
+Saída (bloco 11.9):
+
+```
 triagem 1: ALTA   -> ALTA   | Pet com convulsao e sangramento intenso, chegando agora
 triagem 2: MEDIA  -> MEDIA  | Animal vomitando muito e com febre desde ontem
 triagem 3: BAIXA  -> BAIXA  | Tenho uma duvida sobre a alimentacao, ele esta bem
@@ -483,9 +490,20 @@ Cabeçalho: **`AFTER INSERT OR UPDATE OR DELETE ON COBRANCA FOR EACH ROW`**.
 
 ### 7.3. Prints — os três caminhos
 
-**Print 9 — `INSERT` + linha gerada · Print 10 — `UPDATE` com `OLD` e `NEW` · Print 11 — `DELETE`:**
+**Print 9 — `INSERT` + linha gerada:**
 
-![print 9-11 — trigger nos 3 caminhos](prints/09_trigger_insert_update_delete.png)
+![print 9 — trigger no INSERT](prints/09_trigger_insert.png)
+
+**Print 10 — `UPDATE` com `OLD` e `NEW`:**
+
+![print 10 — trigger no UPDATE](prints/10_trigger_update.png)
+
+**Print 11 — `DELETE` (a mesma linha de auditoria, mostrando `DS_VALORES_OLD` preenchido e
+`DS_VALORES_NEW` nulo):**
+
+![print 11 — trigger no DELETE, coluna OLD](prints/11_trigger_delete_old.png)
+
+![print 11 — trigger no DELETE, coluna NEW](prints/11_trigger_delete_new.png)
 
 Saída (blocos 11.10 e 11.11) — trilha `AUDITORIA_COBRANCA` após 3 `INSERT` + 2 `UPDATE` +
 3 `DELETE` em `COBRANCA`:
@@ -503,7 +521,7 @@ Saída (blocos 11.10 e 11.11) — trilha `AUDITORIA_COBRANCA` após 3 `INSERT` +
 
 **Print 12 — `SELECT` da auditoria + contagem das tabelas:**
 
-![print 12 — SELECT auditoria + contagens](prints/12_auditoria_e_contagens.png)
+![print 12 — SELECT auditoria + contagens](prints/12_auditoria_e_contagem.png)
 
 Saída (bloco 11.12):
 
@@ -538,9 +556,9 @@ persistida** que dá para consultar.
 
 > **`TRG_AUDITORIA_COBRANCA` não entra nesta tabela** — de propósito. Ver §7.2.
 
-**Print 13 (apoio) — as exceções persistidas em `LOG_ERRO`:**
+**Print 14 (apoio) — as exceções persistidas em `LOG_ERRO`:**
 
-![print 13 — LOG_ERRO](prints/13_log_erro.png)
+![print 14 — LOG_ERRO](prints/14_log_erro.png)
 
 Saída (bloco 11.13): as 3 exceções desta demonstração aparecem em `LOG_ERRO` com
 `NM_PROCEDURE`, `NR_CODIGO_ERRO` e `DS_PARAMETROS`.
@@ -617,17 +635,20 @@ registram: isso é **evidência de que o tratamento de erro funciona**.
 
 | Print | Arquivo em `docs/prints/` | Origem no `.sql` |
 |---|---|---|
-| 1 | `01_fn_cobranca_json_feliz.png` | bloco 11.1 |
-| 2 | `02_fn_cobranca_json_excecao.png` | bloco 11.2 |
-| 3 | `03_prc_listar_json.png` | bloco 11.3 |
+| 1 | `01_fn_cobranca_json_sucesso.png` | bloco 11.1 |
+| 2 | `02_fn_cobranca_json_excecoes.png` | bloco 11.2 |
+| 3 | `03_prc_listar_cobrancas_json.png` | bloco 11.3 |
 | 4 | `04_prc_listar_json_excecao.png` | bloco 11.4 |
-| 5 | `05_prc_relatorio_formato.png` | bloco 11.5 |
+| 5 | `05_prc_relatorio_cobrancas.png` | bloco 11.5 |
 | 6 | `06_prc_relatorio_excecao.png` | bloco 11.6 |
-| 7 | `07_fn_score_casos.png` | bloco 11.7 |
-| 8 | `08_fn_score_excecao_update.png` | blocos 11.8 + 11.9 |
-| 9-11 | `09_trigger_insert_update_delete.png` | blocos 11.10 + 11.11 |
-| 12 | `12_auditoria_e_contagens.png` | bloco 11.12 |
-| 13 | `13_log_erro.png` | bloco 11.13 |
+| 7 | `07_fn_calcular_score_urgencia.png` | bloco 11.7 |
+| 8 | `08_fn_score_urgencia_excecao.png` | bloco 11.8 |
+| 9 | `09_trigger_insert.png` | bloco 11.10 (INSERT) |
+| 10 | `10_trigger_update.png` | bloco 11.10 (UPDATE) |
+| 11 | `11_trigger_delete_old.png` + `11_trigger_delete_new.png` | blocos 11.10/11.11 (DELETE) |
+| 12 | `12_auditoria_e_contagem.png` | bloco 11.12 |
+| 13 | `13_triagem_luna_update.png` | bloco 11.9 |
+| 14 | `14_log_erro.png` | bloco 11.13 |
 
 **Como capturar cada print:** cada imagem deve mostrar **o comando e a saída juntos** (não só a
 saída). Capturar direto do painel *Script Output* do SQL Developer, com a janela larga o
