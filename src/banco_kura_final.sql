@@ -2163,7 +2163,7 @@ PROMPT === BLOCO 10: TRG_AUDITORIA_COBRANCA criada ===
 -- #  de "0 linhas ORA-" da rubrica vale para os BLOCOS 0-7 (estrutura + carga).
 -- #
 -- #  Re-executavel: as cobrancas de demonstracao usam IDs 950-952 e sao
--- #  removidas ao fim de 11.6, entao COBRANCA volta a 18 linhas.
+-- #  removidas ao fim de 11.10, entao COBRANCA volta a 18 linhas.
 -- #############################################################################
 
 PROMPT
