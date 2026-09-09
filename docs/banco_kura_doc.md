@@ -1,10 +1,6 @@
 # KURA — Documentação Técnica da Sprint 3
 ## Mastering Relational and Non-Relational Database — FIAP Challenge 2026
 
-> **Fonte deste arquivo:** exportar para **`banco_kura_doc.pdf`** e entregar no portal FIAP
-> junto de **`banco_kura_final.sql`**. As 14 imagens referenciadas como `![...](prints/...)` já
-> estão em `docs/prints/` (capturadas do *Script Output* do SQL Developer); o apêndice §12 mapeia
-> cada uma ao sub-bloco de origem.
 
 ---
 
@@ -14,23 +10,21 @@
 |---|---|
 | **Disciplina** | Mastering Relational and Non-Relational Database |
 | **Instituição** | FIAP — Challenge 2026 |
-| **Turma** | 2TDS_ (2º ano, Análise e Desenvolvimento de Sistemas) |
+| **Turma** | 2TDSPF (2º ano, Análise e Desenvolvimento de Sistemas) |
 | **Sistema** | KURA — gestão de continuidade veterinária (cliente: Clyvo Vet) |
 | **Entrega** | Sprint 3 — 2 procedimentos, 2 funções, 1 gatilho, estrutura e carga |
-| **Data** | 2026-09-__ |
+| **Data** | 2026-09-12 |
 
 ### Integrantes (ordem alfabética)
 
 | Nome completo | RM |
 |---|---|
-| **[PREENCHER: nome completo]** Clayton Alves | RM562285 |
+| Clayton Alves dos Santos | RM562285 |
 | Felipe Ferrete Soares Lemes | RM562999 |
-| **[PREENCHER: nome completo]** Guilherme Sola | RM563674 |
-| **[PREENCHER: nome completo]** Gustavo Bosak | RM566315 |
-| **[PREENCHER: nome completo]** Nikolas Brisola | RM564371 |
+| Guilherme Sola Garcia | RM563674 |
+| Gustavo Bosak Santos | RM566315 |
+| Nikolas Henrique de Souza Lemes Brisola | RM564371 |
 
-> ⚠️ **Antes de exportar o PDF:** substituir os 4 `[PREENCHER]` pelos nomes completos. A rubrica
-> pede *nomes completos em ordem alfabética* e **zero placeholder** no arquivo final.
 
 ---
 
