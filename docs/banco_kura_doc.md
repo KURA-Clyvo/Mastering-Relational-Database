@@ -51,7 +51,7 @@ O KURA é um sistema real de gestão de continuidade veterinária, operado por d
 independentes (um .NET para a clínica, um Java para o tutor) sobre um **único banco Oracle 19c**
 compartilhado. O schema é mantido por **19 migrations Flyway** no repositório `backend-tutor-java`.
 
-O arquivo de entrega **`banco_kura_final.sql`** é a **consolidação dessas 19 migrations num script
+O arquivo de entrega **`2TDSPF_2026_CodigoSql_Integrantes.sql`** é a **consolidação dessas 19 migrations num script
 único e executável** — cada tabela nasce no estado final, com todas as ~75 alterações posteriores
 (`ALTER TABLE`) já aplicadas — **mais** os 5 objetos PL/SQL e a tabela de auditoria exigidos pela
 Sprint 3.
@@ -611,7 +611,7 @@ Cliente: **SQL Developer** (recomendado — evita mojibake por `NLS_LANG` mal co
 
 **Executar:**
 
-1. Abrir `banco_kura_final.sql` no SQL Developer, conectado ao schema de aluno.
+1. Abrir `2TDSPF_2026_CodigoSql_Integrantes.sql` no SQL Developer, conectado ao schema de aluno.
 2. **Run Script (F5)** — não *Run Statement*.
 3. O bloco 0 já faz `SET SERVEROUTPUT ON SIZE UNLIMITED` e `SET LINESIZE 400`.
 4. O script é **re-executável**: o bloco 1 (limpeza) derruba, por nome, só os objetos do KURA,

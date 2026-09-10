@@ -1,5 +1,5 @@
 -- #############################################################################
--- #  banco_kura_final.sql
+-- #  2TDSPF_2026_CodigoSql_Integrantes.sql
 -- #  KURA - Sistema de Gestao de Continuidade Veterinaria (Clyvo Vet)
 -- #  FIAP Challenge 2026 - Sprint 3
 -- #  Disciplina: Mastering Relational and Non-Relational Database
@@ -2337,4 +2337,4 @@ SELECT NM_PROCEDURE, NR_CODIGO_ERRO, DS_PARAMETROS,
 PROMPT
 PROMPT #########################  FIM DA DEMONSTRACAO (BLOCO 11)  #########################
 PROMPT
-PROMPT === FIM DO ARQUIVO banco_kura_final.sql ===
+PROMPT === FIM DO ARQUIVO 2TDSPF_2026_CodigoSql_Integrantes.sql ===

@@ -10,7 +10,7 @@ KURA é um sistema de gestão de continuidade veterinária desenvolvido para a *
 
 ### Sobre o arquivo de entrega
 
-O schema real do KURA é mantido por **19 migrations Flyway** no repositório `backend-tutor-java`. O arquivo **`src/banco_kura_final.sql`** é a **consolidação dessas 19 migrations num único script executável**: cada tabela já nasce no estado final (estado da migration **V19**), com todas as ~75 alterações posteriores (`ALTER TABLE`) já aplicadas inline — **mais** os objetos PL/SQL e a tabela de auditoria exigidos pela Sprint 3.
+O schema real do KURA é mantido por **19 migrations Flyway** no repositório `backend-tutor-java`. O arquivo **`src/2TDSPF_2026_CodigoSql_Integrantes.sql`** é a **consolidação dessas 19 migrations num único script executável**: cada tabela já nasce no estado final (estado da migration **V19**), com todas as ~75 alterações posteriores (`ALTER TABLE`) já aplicadas inline — **mais** os objetos PL/SQL e a tabela de auditoria exigidos pela Sprint 3.
 
 O script é **re-executável**: o BLOCO 1 (limpeza idempotente) derruba, **por nome**, apenas os objetos do KURA — nunca um `DROP` genérico —, porque o schema de aluno da FIAP é **compartilhado entre várias disciplinas**. Nenhuma credencial, host ou connection string aparece no arquivo; toda a carga do BLOCO 7 é fictícia e declarada como tal.
 
@@ -318,7 +318,7 @@ Padrão herdado da 2ª Sprint (`banco/kura_req1`): cada handler faz `ROLLBACK` �
 
 ## Como Executar
 
-`src/banco_kura_final.sql` é o **único arquivo de entrega**. Contém DDL, carga e todo o PL/SQL em ordem de execução correta.
+`src/2TDSPF_2026_CodigoSql_Integrantes.sql` é o **único arquivo de entrega**. Contém DDL, carga e todo o PL/SQL em ordem de execução correta.
 
 ```
 1. Clone o repositório
@@ -470,7 +470,7 @@ A infraestrutura Oracle é provida pela FIAP (parceria FIAP × Oracle — instâ
 
 | Arquivo | Conteúdo |
 |---------|----------|
-| `docs/Documentacao_Tecnica_Kura.pdf` | Documentação técnica completa da Sprint 3 (objeto a objeto, prints, decisões de banca) |
+| `docs/2TDSPF_2026_Proj_BD.pdf` | Documentação técnica completa da Sprint 3 (objeto a objeto, prints, decisões de banca) |
 | `docs/kura_modelo_logico.pdf` | Modelo lógico do banco |
 | `docs/kura_modelo_relacional.pdf` | Modelo relacional do banco |
 | `docs/banco_kura_doc.md` | Fonte Markdown da documentação técnica |
