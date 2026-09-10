@@ -1,11 +1,18 @@
 ![Oracle](https://img.shields.io/badge/Oracle-19c-F80000?logo=oracle)
-![PL/SQL](https://img.shields.io/badge/PL%2FSQL-4%20REQs-3A5235)
+![PL/SQL](https://img.shields.io/badge/PL%2FSQL-2_fn_·_2_proc_·_1_trigger-3A5235)
 ![3NF](https://img.shields.io/badge/Normal_Form-3FN-4A6845)
-![Tables](https://img.shields.io/badge/Tables-26-555)
+![Tables](https://img.shields.io/badge/Tables-30-555)
+![Sequences](https://img.shields.io/badge/Sequences-29_(+1)-555)
 
 ## Kura · Banco de Dados Oracle
 
 KURA é um sistema de gestão de continuidade veterinária desenvolvido para a **Clyvo Vet** como parte do Challenge FIAP 2026. O banco Oracle 19c opera no padrão **Shared Database**, servindo simultaneamente dois backends independentes: o **Backend Clínica** (.NET, responsável pelo prontuário eletrônico, IoT e IA) e o **Backend Tutor** (Java, responsável por identidade, agendamentos e conformidade LGPD). Regras estritas de *ownership* de escrita por domínio evitam concorrência descontrolada, enquanto leitura cruzada entre serviços é permitida via views e entidades `@Immutable`. O schema foi projetado em 3ª Forma Normal (3FN), com constraints nomeadas, sequences Oracle e suporte nativo a `GenerationType.IDENTITY` do Hibernate 6.
+
+### Sobre o arquivo de entrega
+
+O schema real do KURA é mantido por **19 migrations Flyway** no repositório `backend-tutor-java`. O arquivo **`src/banco_kura_final.sql`** é a **consolidação dessas 19 migrations num único script executável**: cada tabela já nasce no estado final (estado da migration **V19**), com todas as ~75 alterações posteriores (`ALTER TABLE`) já aplicadas inline — **mais** os objetos PL/SQL e a tabela de auditoria exigidos pela Sprint 3.
+
+O script é **re-executável**: o BLOCO 1 (limpeza idempotente) derruba, **por nome**, apenas os objetos do KURA — nunca um `DROP` genérico —, porque o schema de aluno da FIAP é **compartilhado entre várias disciplinas**. Nenhuma credencial, host ou connection string aparece no arquivo; toda a carga do BLOCO 7 é fictícia e declarada como tal.
 
 ---
 
@@ -15,21 +22,24 @@ KURA é um sistema de gestão de continuidade veterinária desenvolvido para a *
   - [Domínios e Propriedade das Tabelas](#domínios-e-propriedade-das-tabelas)
   - [Estratégia de Chave Primária](#estratégia-de-chave-primária)
 - [Estrutura do Schema](#estrutura-do-schema)
-  - [Tabelas (26)](#tabelas-26)
-  - [Sequences (22)](#sequences-22)
-  - [Índices](#índices)
-  - [Views](#views)
-- [PL/SQL — Requisitos Implementados](#plsql--requisitos-implementados)
-  - [REQ 1 — Procedures de Carga Parametrizadas](#req-1--procedures-de-carga-parametrizadas)
-  - [REQ 2 — Blocos Anônimos com JOINs](#req-2--blocos-anônimos-com-joins)
-  - [REQ 3 — Relatório Analítico LAG / LEAD](#req-3--relatório-analítico-lag--lead)
-  - [REQ 4 — Cursores Explícitos com IF / CASE](#req-4--cursores-explícitos-com-if--case)
+  - [Blocos do arquivo](#blocos-do-arquivo)
+  - [Tabelas (30)](#tabelas-30)
+  - [Sequences (29 + 1)](#sequences-29--1)
+  - [Índices (13 + 2)](#índices-13--2)
+  - [Views (2)](#views-2)
+- [Objetos PL/SQL da Sprint 3](#objetos-plsql-da-sprint-3)
+  - [Função 1 — `FN_COBRANCA_JSON`](#função-1--fn_cobranca_json)
+  - [Função 2 — `FN_CALCULAR_SCORE_URGENCIA`](#função-2--fn_calcular_score_urgencia)
+  - [Procedimento 1 — `PRC_LISTAR_COBRANCAS_JSON`](#procedimento-1--prc_listar_cobrancas_json)
+  - [Procedimento 2 — `PRC_RELATORIO_COBRANCAS`](#procedimento-2--prc_relatorio_cobrancas)
+  - [Gatilho — `TRG_AUDITORIA_COBRANCA` + `AUDITORIA_COBRANCA`](#gatilho--trg_auditoria_cobranca--auditoria_cobranca)
 - [Modelo de Tratamento de Erros](#modelo-de-tratamento-de-erros)
 - [Pré-requisitos](#pré-requisitos)
 - [Como Executar](#como-executar)
 - [Re-execução e Limpeza](#re-execução-e-limpeza)
 - [Diagrama Entidade-Relacionamento](#diagrama-entidade-relacionamento)
 - [Variáveis de Ambiente / Conexão](#variáveis-de-ambiente--conexão)
+- [Documentação](#documentação)
 - [Equipe](#equipe)
 - [Licença](#licença)
 
@@ -41,9 +51,10 @@ KURA é um sistema de gestão de continuidade veterinária desenvolvido para a *
 
 | Domínio | Tabelas |
 |---------|---------|
-| **.NET (Backend Clínica)** | `CLINICA`, `VETERINARIO`, `TUTOR`, `PET`, `ESPECIE`, `RACA`, `EVENTO_CLINICO`, `TIPO_EVENTO`, `CONSULTA`, `VACINA`, `PRESCRICAO`, `MEDICAMENTO`, `EXAME`, `DOCUMENTO`, `NOTIFICACAO`, `DISPOSITIVO_IOT`, `LEITURA_TEMPERATURA`, `ALERTA_TEMPERATURA`, `TRIAGEM_LUNA`, `INVITE_TUTOR`, `TUTOR_PET` |
-| **Java (Backend Tutor)** | `CONTA_TUTOR`, `CONSENTIMENTO`, `AGENDAMENTO`, `IDEMPOTENCY_KEY` |
-| **Auditoria (Compartilhada)** | `LOG_ERRO` |
+| **.NET (Backend Clínica)** | `CLINICA`, `ESPECIE`, `TIPO_EVENTO`, `MEDICAMENTO`, `RACA`, `VETERINARIO`, `TUTOR`, `DISPOSITIVO_IOT`, `SERVICO_PRECO`, `PET`, `INVITE_TUTOR`, `USUARIO_CLINICA`, `LEITURA_TEMPERATURA`, `INTERACAO_CANAL`, `NOTIFICACAO`, `TUTOR_PET`, `EVENTO_CLINICO`, `ALERTA_TEMPERATURA`, `TRIAGEM_LUNA`, `CONSULTA`, `EXAME`, `VACINA`, `PRESCRICAO`, `DOCUMENTO`, `COBRANCA` |
+| **Java (Backend Tutor)** | `CONTA_TUTOR`, `CONSENTIMENTO`, `IDEMPOTENCY_KEY` |
+| **Shared-write** | `AGENDAMENTO` (Java cria/edita/cancela; .NET atualiza `ST_STATUS`) |
+| **Auditoria (compartilhada)** | `LOG_ERRO`, `AUDITORIA_COBRANCA` *(objeto acadêmico da Sprint 3 — não vira migration Flyway)* |
 
 **Leitura cruzada:**
 - .NET lê `CONTA_TUTOR`, `CONSENTIMENTO`, `AGENDAMENTO`
@@ -53,314 +64,245 @@ A tabela `AGENDAMENTO` é **shared-write**: Java cria, edita e cancela; .NET atu
 
 ### Estratégia de Chave Primária
 
-O schema adota três estratégias de PK, diferenciadas por domínio:
+O schema adota — **fiel ao banco real, sem uniformização** — duas estratégias de PK diferenciadas por domínio:
 
-| Estratégia | Tabelas | Motivo |
-|-----------|---------|--------|
-| `DEFAULT SEQ_xxx.NEXTVAL` | Todas as tabelas .NET (20 tabelas) | Sequências Oracle gerenciadas pelo EF Core; geração no lado do banco |
-| `SEQ_AGENDAMENTO` compartilhada | `AGENDAMENTO` | Java usa `GenerationType.SEQUENCE` — necessita de sequence explícita; não usa `IDENTITY` para manter compatibilidade com SEQUENCE strategy |
-| `GENERATED BY DEFAULT AS IDENTITY` | `CONTA_TUTOR`, `CONSENTIMENTO`, `IDEMPOTENCY_KEY` | Java usa `GenerationType.IDENTITY` com Hibernate 6 — Oracle 19c suporta nativamente; sem sequence Oracle visível |
+| Estratégia | Nº de tabelas | Tabelas | Motivo |
+|-----------|:---:|---------|--------|
+| `DEFAULT SEQ_xxx.NEXTVAL` | 26 | Todas as tabelas .NET-owned | Sequências Oracle geradas no lado do banco (migration V12). Sintaxe `DEFAULT SEQ.NEXTVAL` exige Oracle 12c+ |
+| `GENERATED BY DEFAULT AS IDENTITY` | 4 | `CONTA_TUTOR`, `CONSENTIMENTO`, `IDEMPOTENCY_KEY`, `AGENDAMENTO` | Padrão Java-owned. `AGENDAMENTO` é `IDENTITY` no banco **e** puxa de `SEQ_AGENDAMENTO` pela entidade JPA (`GenerationType.SEQUENCE`) — as duas coisas coexistem porque `GENERATED BY DEFAULT` (≠ `GENERATED ALWAYS`) aceita valor explícito |
+
+> `TUTOR_PET` tem PK composta `(ID_TUTOR, ID_PET)` — sem sequence.
 
 ---
 
 ## Estrutura do Schema
 
-### Tabelas (26)
+### Blocos do arquivo
 
-| Tabela | PK | Domínio | Descrição resumida |
-|--------|----|---------|---------------------|
-| `CLINICA` | `ID_CLINICA` (SEQ) | .NET | Clínicas veterinárias cadastradas. Java lê via `@Immutable`. |
-| `ESPECIE` | `ID_ESPECIE` (SEQ) | .NET | Lookup de espécies animais (Cão, Gato, Ave…). Cacheable. |
-| `MEDICAMENTO` | `ID_MEDICAMENTO` (SEQ) | .NET | Catálogo central de medicamentos para prescrições. |
-| `TIPO_EVENTO` | `ID_TIPO_EVENTO` (SEQ) | .NET | Lookup de tipos de evento: CONSULTA, VACINA, EXAME, PROCEDIMENTO etc. |
-| `VETERINARIO` | `ID_VETERINARIO` (SEQ) | .NET | Veterinários da clínica. FK para `CLINICA`. Java lê via `@Immutable`. |
-| `TUTOR` | `ID_TUTOR` (SEQ) | .NET | Responsável pelo pet. Conta de acesso = `CONTA_TUTOR` (Java). |
-| `RACA` | `ID_RACA` (SEQ) | .NET | Raças por espécie. UK composto `(NM_RACA, ID_ESPECIE)`. Cacheable. |
-| `PET` | `ID_PET` (SEQ) | .NET | Animal atendido. `ID_PET` = prontuário único do paciente. |
-| `TUTOR_PET` | `(ID_TUTOR, ID_PET)` | .NET | Vínculo N:N tutores ↔ pets. Suporta guarda compartilhada. |
-| `EVENTO_CLINICO` | `ID_EVENTO` (SEQ) | .NET | Núcleo da timeline clínica. Cada interação = 1 evento. |
-| `CONSULTA` | `ID_CONSULTA` (SEQ) | .NET | Detalhes clínicos de consulta. Relação 1:1 com `EVENTO_CLINICO`. |
-| `VACINA` | `ID_VACINA` (SEQ) | .NET | Dados de vacinação. `DT_PROXIMA_DOSE` alimenta lembretes da Luna. |
-| `PRESCRICAO` | `ID_PRESCRICAO` (SEQ) | .NET | Prescrições de medicamentos vinculadas a evento clínico. |
-| `EXAME` | `ID_EXAME` (SEQ) | .NET | Exames realizados com resultado textual vinculados a evento. |
-| `DOCUMENTO` | `ID_DOCUMENTO` (SEQ) | .NET | Ponteiros para arquivos em blob storage (Azure Blob / S3). |
-| `NOTIFICACAO` | `ID_NOTIFICACAO` (SEQ) | .NET | Notificações in-app e lembretes para tutores e veterinários. |
-| `DISPOSITIVO_IOT` | `ID_DISPOSITIVO` (SEQ) | .NET | Sensores IoT (ESP32). Autenticação via `X-Api-Key` no .NET. |
-| `LEITURA_TEMPERATURA` | `ID_LEITURA` (SEQ) | .NET | Time-series de temperatura e umidade (~1.440 leituras/dia/sensor). |
-| `ALERTA_TEMPERATURA` | `ID_ALERTA` (SEQ) | .NET | Alertas por leitura fora da faixa. Um alerta por evento de temperatura. |
-| `TRIAGEM_LUNA` | `ID_TRIAGEM` (SEQ) | .NET | Triagens realizadas pela IA Luna. Tutor/Pet opcionais (sem cadastro). |
-| `INVITE_TUTOR` | `ID_INVITE` (SEQ) | .NET | UUID de onboarding gerado pelo .NET, consumido 1x pelo Java. |
-| `CONTA_TUTOR` | `ID_CONTA` (IDENTITY) | Java | Credenciais de acesso ao portal do tutor. Exclusivo do Backend Java. |
-| `CONSENTIMENTO` | `ID_CONSENTIMENTO` (IDENTITY) | Java | Histórico LGPD art. 7º, I. Somente INSERT — nunca UPDATE. |
-| `AGENDAMENTO` | `ID_AGENDAMENTO` (SEQ) | Java / Shared | Shared-write. Java cria/edita/cancela; .NET atualiza `ST_STATUS`. |
-| `IDEMPOTENCY_KEY` | `ID_IDEMPOTENCY` (IDENTITY) | Java | Garantia exactly-once para POSTs sensíveis. TTL 24h. |
-| `LOG_ERRO` | `ID_LOG` (SEQ) | Auditoria | Log de erros de procedures Oracle. Sem FKs intencionalmente. |
+| Bloco | Conteúdo |
+|:---:|---|
+| 0 | Cabeçalho e configuração de sessão (`SET SERVEROUTPUT ON SIZE UNLIMITED`, `SET DEFINE OFF`, `LINESIZE 400`…) |
+| 1 | Limpeza idempotente — `DROP` dos objetos KURA, **por nome** |
+| 2 | **29 sequences** (`START WITH 100 INCREMENT BY 1`) |
+| 3 | **30 tabelas** (estado V19), em ordem topológica de dependência de FK (5 níveis) |
+| 4 | **13 índices** explícitos (além dos de PK/UNIQUE) |
+| 5 | **2 views** |
+| 6 | Tabela de auditoria da Sprint 3 — `AUDITORIA_COBRANCA` + `SEQ_AUDITORIA_COBRANCA` + 2 índices |
+| 7 | Carga de dados — **≥ 5 registros por tabela**, fictícios |
+| 8 | **Funções** — `FN_COBRANCA_JSON`, `FN_CALCULAR_SCORE_URGENCIA` |
+| 9 | **Procedimentos** — `PRC_LISTAR_COBRANCAS_JSON`, `PRC_RELATORIO_COBRANCAS` |
+| 10 | **Trigger** — `TRG_AUDITORIA_COBRANCA` |
+| 11 | Bloco de demonstração — caminho feliz + cada exceção tratada |
 
-### Sequences (22)
+### Tabelas (30)
 
-Todas as sequences são criadas com `START WITH 1 INCREMENT BY 1 NOCACHE NOCYCLE`.
+Ordenadas por nível de dependência de FK (ordem de criação no BLOCO 3).
 
-| Sequence | Tabela proprietária |
-|----------|---------------------|
-| `SEQ_CLINICA` | `CLINICA` |
-| `SEQ_VETERINARIO` | `VETERINARIO` |
-| `SEQ_TUTOR` | `TUTOR` |
-| `SEQ_ESPECIE` | `ESPECIE` |
-| `SEQ_RACA` | `RACA` |
-| `SEQ_PET` | `PET` |
-| `SEQ_TIPO_EVENTO` | `TIPO_EVENTO` |
-| `SEQ_EVENTO_CLINICO` | `EVENTO_CLINICO` |
-| `SEQ_CONSULTA` | `CONSULTA` |
-| `SEQ_VACINA` | `VACINA` |
-| `SEQ_MEDICAMENTO` | `MEDICAMENTO` |
-| `SEQ_PRESCRICAO` | `PRESCRICAO` |
-| `SEQ_EXAME` | `EXAME` |
-| `SEQ_DOCUMENTO` | `DOCUMENTO` |
-| `SEQ_AGENDAMENTO` | `AGENDAMENTO` (Java `GenerationType.SEQUENCE`) |
-| `SEQ_NOTIFICACAO` | `NOTIFICACAO` |
-| `SEQ_LOG_ERRO` | `LOG_ERRO` |
-| `SEQ_DISPOSITIVO_IOT` | `DISPOSITIVO_IOT` |
-| `SEQ_LEITURA_TEMP` | `LEITURA_TEMPERATURA` |
-| `SEQ_ALERTA_TEMP` | `ALERTA_TEMPERATURA` |
-| `SEQ_TRIAGEM_LUNA` | `TRIAGEM_LUNA` |
-| `SEQ_INVITE_TUTOR` | `INVITE_TUTOR` |
+| # | Tabela | PK | Domínio | Descrição |
+|:--:|--------|----|---------|-----------|
+| 1 | `CLINICA` | `ID_CLINICA` (SEQ) | .NET | Clínicas veterinárias. Raiz do isolamento multi-tenant. |
+| 1 | `ESPECIE` | `ID_ESPECIE` (SEQ) | .NET | Espécies animais (Cão, Gato…). Catálogo de baixa mutabilidade. |
+| 1 | `TIPO_EVENTO` | `ID_TIPO_EVENTO` (SEQ) | .NET | Catálogo de tipos de evento clínico. `CD_TIPO` = chave de negócio. |
+| 1 | `MEDICAMENTO` | `ID_MEDICAMENTO` (SEQ) | .NET | Catálogo central de medicamentos para prescrições. |
+| 1 | `LOG_ERRO` | `ID_LOG` (SEQ) | Auditoria | Log de erros de procedures Oracle. Sem FKs intencionalmente. |
+| 1 | `IDEMPOTENCY_KEY` | `ID_IDEMPOTENCY` (IDENTITY) | Java | Garantia exactly-once para POSTs sensíveis. TTL 24h. |
+| 2 | `RACA` | `ID_RACA` (SEQ) | .NET | Raças por espécie. |
+| 2 | `VETERINARIO` | `ID_VETERINARIO` (SEQ) | .NET | Veterinários vinculados à clínica. `UK_VET_CLINICA_ID` (V19) sustenta a FK composta anti cross-tenant de `USUARIO_CLINICA`. |
+| 2 | `TUTOR` | `ID_TUTOR` (SEQ) | .NET | Responsável pelo pet. Java lê via `@Immutable`. |
+| 2 | `DISPOSITIVO_IOT` | `ID_DISPOSITIVO` (SEQ) | .NET | Sensores IoT de temperatura por clínica. |
+| 2 | `SERVICO_PRECO` | `ID_SERVICO_PRECO` (SEQ) | .NET | Catálogo de preços da clínica (migration V18). Alterar `VL_PRECO` não reescreve cobrança já lançada. |
+| 3 | `PET` | `ID_PET` (SEQ) | .NET | Animal atendido. `ID_PET` = prontuário único do paciente. |
+| 3 | `INVITE_TUTOR` | `ID_INVITE` (SEQ) | .NET | Convite gerado pelo .NET, consumido 1× pelo Java. |
+| 3 | `CONSENTIMENTO` | `ID_CONSENTIMENTO` (IDENTITY) | Java | Histórico LGPD art. 7º, I. Somente INSERT — nunca UPDATE. |
+| 3 | `USUARIO_CLINICA` | `ID_USUARIO_CLINICA` (SEQ) | .NET | Identidade individual do lado clínico (migration V17). FK composta com `VETERINARIO` recusa vet de outra clínica. |
+| 3 | `LEITURA_TEMPERATURA` | `ID_LEITURA` (SEQ) | .NET | Séries temporais de temperatura/umidade por dispositivo IoT. |
+| 3 | `INTERACAO_CANAL` | `ID_INTERACAO_CANAL` (SEQ) | .NET | Interação de canal registrada pela Luna (migration V15). `ID_CLINICA` nullable = origem não identificada. |
+| 3 | `NOTIFICACAO` | `ID_NOTIFICACAO` (SEQ) | .NET | Notificações internas da clínica (tutor e/ou veterinário). |
+| 4 | `TUTOR_PET` | `(ID_TUTOR, ID_PET)` | .NET | Vínculo N:N tutores ↔ pets. `ST_PRINCIPAL='S'` = quem recebe notificações. |
+| 4 | `CONTA_TUTOR` | `ID_CONTA` (IDENTITY) | Java | Credenciais de acesso ao portal do tutor. Criada no fluxo `register-invite`. |
+| 4 | `EVENTO_CLINICO` | `ID_EVENTO` (SEQ) | .NET | Núcleo da timeline clínica. Entidade completa desde a V9. |
+| 4 | `ALERTA_TEMPERATURA` | `ID_ALERTA` (SEQ) | .NET | Alertas por leitura IoT fora da faixa. |
+| 4 | `TRIAGEM_LUNA` | `ID_TRIAGEM` (SEQ) | .NET | Triagens da IA Luna. `DS_NIVEL_URGENCIA` é o destino da `FN_CALCULAR_SCORE_URGENCIA`. |
+| 5 | `AGENDAMENTO` | `ID_AGENDAMENTO` (IDENTITY + SEQ) | Java / Shared | Shared-write. `NR_VERSION` = optimistic locking (409). |
+| 5 | `CONSULTA` | `ID_CONSULTA` (SEQ) | .NET | Detalhe de consulta. Relação 1:1 com `EVENTO_CLINICO`. |
+| 5 | `EXAME` | `ID_EXAME` (SEQ) | .NET | Resultado de exame vinculado a um evento clínico. |
+| 5 | `VACINA` | `ID_VACINA` (SEQ) | .NET | Aplicação de vacina vinculada a um evento clínico. |
+| 5 | `PRESCRICAO` | `ID_PRESCRICAO` (SEQ) | .NET | Prescrição de medicamento vinculada a um evento clínico. |
+| 5 | `DOCUMENTO` | `ID_DOCUMENTO` (SEQ) | .NET | Metadados de documento (PDF, imagem) vinculado a um evento. |
+| 5 | `COBRANCA` | `ID_COBRANCA` (SEQ) | .NET | Lançamento financeiro (migration V18). **Tabela de fatos da Sprint 3.** `VL_COBRADO` é `NUMBER(10,2)` — cópia do valor no lançamento. |
 
-> As tabelas Java com `GENERATED BY DEFAULT AS IDENTITY` (`CONTA_TUTOR`, `CONSENTIMENTO`, `IDEMPOTENCY_KEY`) não possuem sequence Oracle explícita.
+**Tabela de auditoria da Sprint 3 (BLOCO 6 — não é migration Flyway):**
 
-### Índices
+| Tabela | PK | Descrição |
+|--------|----|-----------|
+| `AUDITORIA_COBRANCA` | `ID_AUDITORIA` (SEQ) | Trilha de auditoria DML de `COBRANCA`. Preenchida exclusivamente por `TRG_AUDITORIA_COBRANCA`. Sem FK para `COBRANCA` (auditar `DELETE` com FK ativa seria autocontraditório). |
 
-**Índices de FK (performance de JOIN)**
+### Sequences (29 + 1)
 
-| Índice | Tabela | Colunas |
-|--------|--------|---------|
-| `IDX_VET_CLINICA` | `VETERINARIO` | `ID_CLINICA` |
-| `IDX_TUTOR_CLINICA` | `TUTOR` | `ID_CLINICA` |
-| `IDX_RACA_ESPECIE` | `RACA` | `ID_ESPECIE` |
-| `IDX_PET_CLINICA` | `PET` | `ID_CLINICA` |
-| `IDX_PET_ESPECIE` | `PET` | `ID_ESPECIE` |
-| `IDX_PET_RACA` | `PET` | `ID_RACA` |
-| `IDX_PET_VET_RESP` | `PET` | `ID_VETERINARIO_RESP` |
-| `IDX_TP_PET` | `TUTOR_PET` | `ID_PET` |
-| `IDX_EV_CLINICA` | `EVENTO_CLINICO` | `ID_CLINICA` |
-| `IDX_EV_PET` | `EVENTO_CLINICO` | `ID_PET` |
-| `IDX_EV_VETERINARIO` | `EVENTO_CLINICO` | `ID_VETERINARIO` |
-| `IDX_EV_TIPO` | `EVENTO_CLINICO` | `ID_TIPO_EVENTO` |
-| `IDX_DOC_EVENTO` | `DOCUMENTO` | `ID_EVENTO_CLINICO` |
-| `IDX_NOTIF_CLINICA` | `NOTIFICACAO` | `ID_CLINICA` |
-| `IDX_NOTIF_TUTOR` | `NOTIFICACAO` | `ID_TUTOR` |
-| `IDX_IOT_CLINICA` | `DISPOSITIVO_IOT` | `ID_CLINICA` |
-| `IDX_ALERTA_LEITURA` | `ALERTA_TEMPERATURA` | `ID_LEITURA_TEMPERATURA` |
-| `IDX_TRIAGEM_CLINICA` | `TRIAGEM_LUNA` | `ID_CLINICA` |
-| `IDX_TRIAGEM_PET` | `TRIAGEM_LUNA` | `ID_PET` |
-| `IDX_CONS_TUTOR` | `CONSENTIMENTO` | `(ID_TUTOR, DS_TIPO)` |
-| `IDX_AGEND_CLINICA` | `AGENDAMENTO` | `ID_CLINICA` |
-| `IDX_AGEND_TUTOR` | `AGENDAMENTO` | `ID_TUTOR` |
-| `IDX_AGEND_PET` | `AGENDAMENTO` | `ID_PET` |
-| `IDX_INVITE_TUTOR` | `INVITE_TUTOR` | `ID_TUTOR` |
+Todas criadas com `START WITH 100 INCREMENT BY 1` — convenção herdada das migrations V1/V12: fica acima do maior ID dos seeds de desenvolvimento e das linhas de produção.
 
-**Índices compostos**
+| Grupo | Sequences |
+|-------|-----------|
+| .NET-owned (tabelas V1, migration V12) | `SEQ_CLINICA`, `SEQ_ESPECIE`, `SEQ_TIPO_EVENTO`, `SEQ_RACA`, `SEQ_VETERINARIO`, `SEQ_TUTOR`, `SEQ_PET`, `SEQ_INVITE_TUTOR`, `SEQ_EVENTO_CLINICO` |
+| .NET-owned (tabelas V9, migration V12) | `SEQ_MEDICAMENTO`, `SEQ_NOTIFICACAO`, `SEQ_DISPOSITIVO_IOT`, `SEQ_LEITURA_TEMP`, `SEQ_ALERTA_TEMP`, `SEQ_TRIAGEM_LUNA`, `SEQ_EXAME`, `SEQ_VACINA`, `SEQ_PRESCRICAO`, `SEQ_DOCUMENTO`, `SEQ_CONSULTA` |
+| Auditoria (V13) | `SEQ_LOG_ERRO` |
+| Canal (V15) | `SEQ_INTERACAO_CANAL` |
+| Identidade clínica (V17) | `SEQ_USUARIO_CLINICA` |
+| Módulo financeiro (V18) | `SEQ_SERVICO_PRECO`, `SEQ_COBRANCA` |
+| Java-owned (V1) | `SEQ_CONTA_TUTOR` ⚠️, `SEQ_CONSENTIMENTO` ⚠️, `SEQ_AGENDAMENTO`, `SEQ_IDEMPOTENCY_KEY` ⚠️ |
+| **Sprint 3 (BLOCO 6)** | `SEQ_AUDITORIA_COBRANCA` — `START WITH 1 … NOCACHE NOCYCLE` |
 
-| Índice | Tabela | Colunas | Propósito |
-|--------|--------|---------|-----------|
-| `IDX_INVITE_TOKEN_ATIVO` | `INVITE_TUTOR` | `(NR_TOKEN, ST_UTILIZADO, ST_ATIVO)` | Filtro de `InviteTutorRepository.findByNrToken()` — WHERE token + não utilizado + ativo |
-| `IDX_ALERTA_ATIVOS` | `ALERTA_TEMPERATURA` | `(ST_RESOLVIDO, DT_CRIACAO DESC)` | Dashboard de alertas não resolvidos, por recência |
+> ⚠️ **`SEQ_CONTA_TUTOR`, `SEQ_CONSENTIMENTO` e `SEQ_IDEMPOTENCY_KEY` são órfãs de propósito** — as tabelas usam `GENERATED BY DEFAULT AS IDENTITY` e ninguém puxa dessas sequences. Existem no banco real (migration V1) e são mantidas por fidelidade. **`SEQ_AGENDAMENTO` NÃO é órfã**: a entidade JPA `Agendamento.java` puxa dela.
 
-**Índices de suporte a queries analíticas e TTL**
+### Índices (13 + 2)
 
-| Índice | Tabela | Colunas | Propósito |
-|--------|--------|---------|-----------|
-| `IDX_EV_DATA` | `EVENTO_CLINICO` | `DT_EVENTO DESC` | Timeline cronológica reversa |
-| `IDX_LEITURA_DISP_DATA` | `LEITURA_TEMPERATURA` | `(ID_DISPOSITIVO_IOT, DT_LEITURA DESC)` | Time-series por sensor, partição temporal |
-| `IDX_AGEND_DATA` | `AGENDAMENTO` | `DT_AGENDAMENTO` | Busca por janela de datas |
-| `IDX_AGEND_STATUS` | `AGENDAMENTO` | `ST_STATUS` | Filtro de status (pendentes, realizados…) |
-| `IDX_AGEND_EVENTO` | `AGENDAMENTO` | `ID_EVENTO_GERADO` | JOIN inverso AGENDAMENTO → EVENTO_CLINICO |
-| `IDX_LOG_DATA` | `LOG_ERRO` | `DT_ERRO DESC` | Auditoria temporal reversa |
-| `IDX_LOG_PROCEDURE` | `LOG_ERRO` | `NM_PROCEDURE` | Filtro por procedure com erro |
-| `IDX_IDEMPOT_EXPIRA` | `IDEMPOTENCY_KEY` | `DT_EXPIRACAO` | Job de limpeza TTL: `DELETE WHERE DT_EXPIRACAO < SYSDATE` |
-| `IDX_IDEMPOT_CRIACAO` | `IDEMPOTENCY_KEY` | `DT_CRIACAO` | Limpeza alternativa por data de criação (Flyway V2) |
+Além dos índices que o Oracle cria sozinho para PK e `UNIQUE`.
 
-### Views
+| Índice | Tabela | Colunas | Origem |
+|--------|--------|---------|:---:|
+| `IDX_AGEND_TUTOR` | `AGENDAMENTO` | `ID_TUTOR` | V1 |
+| `IDX_AGEND_PET` | `AGENDAMENTO` | `ID_PET` | V1 |
+| `IDX_AGEND_DT` | `AGENDAMENTO` | `DT_AGENDAMENTO` | V1 |
+| `IDX_CONSENT_TUTOR` | `CONSENTIMENTO` | `(ID_TUTOR, DS_TIPO)` | V1 |
+| `IDX_PET_ESPECIE` | `PET` | `ID_ESPECIE` | V1 |
+| `IDX_PET_RACA` | `PET` | `ID_RACA` | V1 |
+| `IDX_IDEMPOT_CRIACAO` | `IDEMPOTENCY_KEY` | `DT_CRIACAO` | V2 — otimiza o `DELETE` em lote do TTL |
+| `IDX_INVITE_TOKEN_ATIVO` | `INVITE_TUTOR` | `(NR_TOKEN, ST_UTILIZADO, ST_ATIVO)` | V3 — busca de invite por token/estado |
+| `IDX_AGEND_EVENTO` | `AGENDAMENTO` | `ID_EVENTO_GERADO` | V5 — FK filha sem índice = varredura no lock |
+| `IDX_LOG_DATA` | `LOG_ERRO` | `DT_ERRO DESC` | V13 |
+| `IDX_LOG_PROCEDURE` | `LOG_ERRO` | `NM_PROCEDURE` | V13 |
+| `IDX_COBRANCA_CLINICA_DATA` | `COBRANCA` | `(ID_CLINICA, DT_COBRANCA)` | V18 — "por clínica e por período" |
+| `IDX_COBRANCA_EVENTO` | `COBRANCA` | `ID_EVENTO_CLINICO` | V18 — "cobranças deste atendimento" |
+| `IDX_AUDITORIA_COB_DATA` | `AUDITORIA_COBRANCA` | `DT_OPERACAO DESC` | Sprint 3 |
+| `IDX_AUDITORIA_COB_REG` | `AUDITORIA_COBRANCA` | `ID_COBRANCA` | Sprint 3 |
+
+### Views (2)
+
+Versão consolidada = a da migration V6 (aliases renomeados para os nomes canônicos das entidades Java).
 
 | View | Tabelas-fonte | Propósito | Consumidor |
 |------|--------------|-----------|------------|
 | `VW_TIMELINE_PET` | `AGENDAMENTO`, `PET`, `CLINICA` | Linha do tempo de atendimentos por pet, com aliases V6 (`ID_EVENTO`, `DT_EVENTO`). Filtra `ID_PET IS NOT NULL`. | Java `TimelineService` |
-| `VW_VACINAS_VENCENDO` | `AGENDAMENTO`, `PET`, `CLINICA` | Vacinas agendadas (tipo `'VACINA'`) nos próximos 30 dias, não canceladas nem realizadas. `INTERVAL '30' DAY`. | Luna (alertas preventivos) |
-| `VW_TIMELINE_CLINICA` | `PET`, `EVENTO_CLINICO`, `VETERINARIO`, `TIPO_EVENTO`, `CLINICA` | Timeline clínica completa via `EVENTO_CLINICO` do .NET — separada da `VW_TIMELINE_PET`. Filtra `ST_ATIVO = 'S'`. | .NET e Luna |
+| `VW_VACINAS_VENCENDO` | `AGENDAMENTO`, `PET`, `CLINICA` | Vacinas agendadas (`DS_TIPO = 'VACINA'`) nos próximos 30 dias, não canceladas nem realizadas. `INTERVAL '30' DAY`. | Luna (alertas preventivos) |
 
 ---
 
-## PL/SQL — Requisitos Implementados
+## Objetos PL/SQL da Sprint 3
 
-Todo o PL/SQL está consolidado no arquivo `src/kura_schema_final_entrega.sql`, nas Seções 2 a 5.
+Os cinco objetos **não são cinco exercícios isolados** — são um recorte do sistema, todo girando em torno da tabela de fatos **`COBRANCA`**:
 
-### REQ 1 — Procedures de Carga Parametrizadas
+```
+                 SERVICO_PRECO ──┐
+                                 │ (catálogo de preços)
+   CLINICA ──── EVENTO_CLINICO ──┴── COBRANCA ──────────► FN_COBRANCA_JSON  ─► PRC_LISTAR_COBRANCAS_JSON
+                                        │  ▲                       │
+                                        │  │ (mesma função)        │
+                                        ▼  └───────────────────────┘
+                              TRG_AUDITORIA_COBRANCA ─► AUDITORIA_COBRANCA
+                                        ▲
+                              PRC_RELATORIO_COBRANCAS (agrega COBRANCA)
 
-Cinco stored procedures que inserem dados nas tabelas base sem nenhum valor hard-coded. Todos os parâmetros são tipados com `%TYPE`. Um bloco anônimo de demonstração ao final da seção invoca todas as procedures em sequência (ordem FK-safe: CLINICA → ESPECIE → VETERINARIO → TUTOR → PET), populando dados para os REQs 2, 3 e 4.
-
-**Regras atendidas:**
-- [x] `[R1.1]` Carga exclusivamente via parâmetro — SEM hard-code
-- [x] `[R1.2]` `EXCEPTION WHEN OTHERS` em todos os blocos
-- [x] `[R1.3]` Mínimo de 2 exceções específicas por procedure (`DUP_VAL_ON_INDEX`, `VALUE_ERROR`, `NO_DATA_FOUND`)
-- [x] `[R1.4]` Log gravado em `LOG_ERRO` com: `NM_PROCEDURE`, `USER`, `SYSTIMESTAMP`, `SQLCODE`, `SQLERRM`, `DS_PARAMETROS`
-
-**Procedures implementadas:**
-
-| Procedure | Tabela-alvo | Parâmetros principais | Exceções específicas |
-|-----------|-------------|-----------------------|----------------------|
-| `PRC_INSERT_CLINICA` | `CLINICA` | `p_nm_clinica`, `p_nr_cnpj`, `p_nm_razao_social`, `p_ds_endereco`, `p_nm_cidade`, `p_sg_uf`, `p_nr_cep`, `p_ds_telefone`, `p_ds_email`, `p_ds_email_acesso`, `p_ds_senha_hash` | `DUP_VAL_ON_INDEX` (CNPJ ou e-mail duplicado), `VALUE_ERROR` (tamanho/tipo inválido) |
-| `PRC_INSERT_ESPECIE` | `ESPECIE` | `p_nm_especie` | `DUP_VAL_ON_INDEX` (nome duplicado), `VALUE_ERROR` |
-| `PRC_INSERT_VETERINARIO` | `VETERINARIO` | `p_id_clinica`, `p_nm_veterinario`, `p_nr_crmv`, `p_ds_email`, `p_nr_telefone` | `DUP_VAL_ON_INDEX` (CRMV ou e-mail), `NO_DATA_FOUND` (clínica inexistente ou inativa) |
-| `PRC_INSERT_TUTOR` | `TUTOR` | `p_id_clinica`, `p_nm_tutor`, `p_nr_cpf`, `p_ds_email`, `p_ds_telefone`, `p_ds_whatsapp`, `p_nm_cidade`, `p_sg_uf` | `DUP_VAL_ON_INDEX` (CPF ou e-mail), `VALUE_ERROR` |
-| `PRC_INSERT_PET` | `PET` | `p_id_clinica`, `p_id_especie`, `p_id_raca`, `p_nm_pet`, `p_dt_nascim`, `p_sg_sexo`, `p_sg_porte` | `NO_DATA_FOUND` (espécie inexistente), `VALUE_ERROR` (sexo fora de `M/F` ou porte fora de `P/M/G`) |
-
-> `PRC_INSERT_VETERINARIO` e `PRC_INSERT_PET` executam um `SELECT INTO` de validação FK **antes** do `INSERT`, disparando `NO_DATA_FOUND` com mensagem contextualizada caso a entidade pai não exista ou esteja inativa.
-
----
-
-### REQ 2 — Blocos Anônimos com JOINs
-
-Dois blocos anônimos PL/SQL com cursor explícito, cada um unindo 3 tabelas, com `GROUP BY` e `ORDER BY`, produzindo relatórios formatados via `DBMS_OUTPUT`.
-
-**Regras atendidas:**
-- [x] `[R2.1]` 2 blocos anônimos PL/SQL com cursor explícito
-- [x] `[R2.2]` Cada bloco com JOIN entre ≥ 3 tabelas distintas
-- [x] `[R2.3]` `GROUP BY` aplicado
-- [x] `[R2.4]` `ORDER BY` aplicado
-- [x] `[R2.5]` Saída formatada via `DBMS_OUTPUT` (cabeçalho + dados + totais)
-
-**Bloco A — Distribuição de Pets por Espécie e Clínica**
-
-- Tabelas unidas: `PET` ⟶ `ESPECIE` ⟶ `CLINICA` (2 JOINs / 3 tabelas)
-- `GROUP BY`: `c.NM_CLINICA, e.NM_ESPECIE`
-- `ORDER BY`: `c.NM_CLINICA ASC, QT_PETS DESC`
-- Métricas: total de pets ativos, breakdown por sexo (machos/fêmeas) e porte (P/M/G)
-- Saída: separador por clínica + **Total Geral** de pets ativos ao fim
-
-**Bloco B — Resumo de Agendamentos por Status e Veterinário**
-
-- Tabelas unidas: `AGENDAMENTO` ⟶ `VETERINARIO` ⟶ `CLINICA` (2 JOINs / 3 tabelas)
-- Filtro: `DT_AGENDAMENTO >= ADD_MONTHS(SYSTIMESTAMP, -12)` (últimos 12 meses)
-- `GROUP BY`: `c.NM_CLINICA, v.NM_VETERINARIO, a.ST_STATUS`
-- `ORDER BY`: `c.NM_CLINICA, v.NM_VETERINARIO, QT_AGEND DESC`
-- `CASE` para rótulo de status: ex. `'NAO_COMPARECEU'` → `'** Nao Compareceu'`
-- Saída: **Sub-Total por veterinário** + `TOTAL GERAL` de agendamentos ao fim
-
----
-
-### REQ 3 — Relatório Analítico LAG / LEAD
-
-Bloco analítico sobre a tabela `LEITURA_TEMPERATURA` (time-series dos sensores IoT). Um bloco de carga de demonstração é executado **antes** do bloco analítico, inserindo 1 dispositivo (`ESP32-KURA-01`) e 7 leituras espaçadas em 1 minuto — garantindo que as posições 2 a 6 (5 linhas) tenham `LAG` e `LEAD` não nulos.
-
-**Regras atendidas:**
-- [x] `[R3.1]` `LAG()` com resultado impresso
-- [x] `[R3.2]` `LEAD()` com resultado impresso
-- [x] `[R3.3]` `PARTITION BY ID_DISPOSITIVO_IOT` — suporte a múltiplos sensores
-- [x] `[R3.4]` `ORDER BY DT_LEITURA` — série temporal correta
-- [x] `[R3.5]` `NULL` tratado e exibido como `'Vazio'` (primeira e última linha da série)
-- [x] `[R3.6]` ≥ 5 linhas com valor anterior **e** próximo não nulos (posições 2–6 de 7)
-- [x] `[R3.7]` Dados de demonstração inseridos imediatamente antes do bloco analítico
-
-**Função de janela implementada:**
-
-```sql
--- LAG: temperatura da leitura anterior (NULL se primeira linha da partição)
-LAG(lt.VL_TEMPERATURA, 1, NULL)
-    OVER (PARTITION BY lt.ID_DISPOSITIVO_IOT
-          ORDER BY lt.DT_LEITURA)  AS VL_ANTERIOR,
-
--- LEAD: temperatura da próxima leitura (NULL se última linha da partição)
-LEAD(lt.VL_TEMPERATURA, 1, NULL)
-    OVER (PARTITION BY lt.ID_DISPOSITIVO_IOT
-          ORDER BY lt.DT_LEITURA)  AS VL_PROXIMO
+   INTERACAO_CANAL ──► TRIAGEM_LUNA.DS_NIVEL_URGENCIA ◄── FN_CALCULAR_SCORE_URGENCIA
 ```
 
-O cursor também une `LEITURA_TEMPERATURA` com `DISPOSITIVO_IOT` (JOIN) para exibir o código do sensor (`CD_DISPOSITIVO`). Um `CASE` adicional classifica a temperatura atual em `Normal` / `! Atencao` (≥25°C) / `*** ALTA ***` (≥27°C).
+| Objeto | Tipo | Assinatura | Pts |
+|--------|------|------------|:---:|
+| `FN_COBRANCA_JSON` | Função | `(p_id_cobranca, p_id_evento, p_id_clinica, p_id_servico, p_vl_cobrado, p_ds_forma, p_dt_cobranca, p_st_ativa) RETURN VARCHAR2` | 15 |
+| `FN_CALCULAR_SCORE_URGENCIA` | Função | `(p_texto IN VARCHAR2) RETURN VARCHAR2` → `'ALTA'` / `'MEDIA'` / `'BAIXA'` | 15 |
+| `PRC_LISTAR_COBRANCAS_JSON` | Procedimento | `(p_id_clinica IN NUMBER DEFAULT NULL)` | 15 |
+| `PRC_RELATORIO_COBRANCAS` | Procedimento | `(p_id_clinica IN NUMBER DEFAULT NULL)` | 15 |
+| `TRG_AUDITORIA_COBRANCA` | Gatilho | `AFTER INSERT OR UPDATE OR DELETE ON COBRANCA FOR EACH ROW` | 30 |
 
----
+### Função 1 — `FN_COBRANCA_JSON`
 
-### REQ 4 — Cursores Explícitos com IF / CASE
+Recebe os **campos escalares de uma cobrança** e devolve uma **string JSON válida**, construída 100% à mão (concatenação + escape próprio). **Não usa** `JSON_OBJECT`, `JSON_ARRAY`, `TO_JSON`, `JSON_TABLE` nem similar.
 
-Quatro blocos anônimos, cada um com o padrão completo `OPEN / FETCH / EXIT WHEN %NOTFOUND / CLOSE` e estruturas de tomada de decisão.
+- **Assinatura escalar de propósito:** a trigger `FOR EACH ROW` sobre `COBRANCA` **não pode consultar `COBRANCA`** (`ORA-04091`, tabela mutante). A função recebe os 8 valores escalares e só consulta `SERVICO_PRECO` (que a trigger não toca).
+- **Escape manual, ordem importa:** troca `\` por `\\` **antes** de `"` por `\"`.
+- **`NULL` vira o literal `null`**, sem aspas — `ID_SERVICO_PRECO` e `DS_FORMA_PAGAMENTO` são nullable.
+- **Ponto decimal forçado:** a sessão FIAP é pt-BR (`NLS_NUMERIC_CHARACTERS = ',.'`); força-se `'.,'` no `TO_CHAR` para não emitir `{"valor": 12,5}` (JSON inválido).
+- **Data em ISO-8601 estável:** `TO_CHAR(p_dt_cobranca, 'YYYY-MM-DD"T"HH24:MI:SS')`.
+- **3 exceções:** `NO_DATA_FOUND`, `VALUE_ERROR`, `OTHERS` — **sempre** devolve um JSON de fallback, **nunca** propaga (chamada pela trigger). **Não grava em `LOG_ERRO`** — `COMMIT` dentro de trigger é `ORA-04092`.
 
-**Regras atendidas:**
-- [x] `[R4.1]` 4 blocos anônimos com cursor explícito
-- [x] `[R4.2]` Padrão completo: `OPEN / FETCH / EXIT WHEN %NOTFOUND / CLOSE`
-- [x] `[R4.3]` Estrutura `IF` usada em pelo menos um bloco (Blocos I, II e IV)
-- [x] `[R4.4]` Estrutura `CASE` usada em pelo menos um bloco (Blocos II e III)
-- [x] `[R4.5]` **OBRIGATÓRIO:** Sub-Total por grupo + Total Geral (Bloco I)
-- [x] `[R4.6]` Saída formatada via `DBMS_OUTPUT` com cabeçalhos e separadores
+### Função 2 — `FN_CALCULAR_SCORE_URGENCIA`
 
-| Bloco | Tabelas | Decisão | Destaque |
-|-------|---------|---------|----------|
-| **I** | `CLINICA` + `VETERINARIO` | `IF` em cascata — classifica porte da clínica pelo total de vets (≥5→Grande; ≥3→Médio; else→Pequeno) | **Sub-Total por clínica** (Ativos, Inativos, Total, Porte) + **Total Geral** *(rubrica obrigatória)* |
-| **II** | `PET` + `ESPECIE` + `CLINICA` | `CASE` no porte (`P/M/G` → rótulo); `IF` cascata na fase de vida (`<6m`→Filhote; `<18m`→Jovem; `<84m`→Adulto; else→Sênior) | `MONTHS_BETWEEN(SYSDATE, DT_NASCIMENTO)` calcula idade. Prioridade preventiva por fase (Filhote/Sênior = ALTA) |
-| **III** | `AGENDAMENTO` + `CLINICA` + `VETERINARIO` (LEFT JOIN) | `CASE` em `ST_STATUS` + `HORAS_DIFF` → ação recomendada (ex. `AGENDADO` + atraso >2h → `*** CONFIRMAR URGENTE ***`) | Contagem de pendentes totais e casos críticos ao fim |
-| **IV** | `LEITURA_TEMPERATURA` + `DISPOSITIVO_IOT` | `IF` em cascata: `≥27°C`→`*** CRITICA ***`; `≥24°C`→`! Alta`; `≥15°C`→`Normal`; else→`* Baixa` | Resumo por faixa (Normal / Alta / Crítica / Baixa) + Total ao fim |
+Traz para o banco o **motor de triagem léxico da Luna** (hoje em `kura-luna-ai/luna/src/ai/triage_engine.py` + `triage_rules.py`), portado 1:1. O nível calculado é gravado em `TRIAGEM_LUNA.DS_NIVEL_URGENCIA`.
+
+- Pontuação: `ALTA = 10`, `MEDIA = 3`, `BAIXA = 1`. Três níveis, nessa ordem de prioridade.
+- Texto **normalizado** (minúsculas + remoção de acento, via `TRANSLATE`/`UNISTR`); casamento por **substring** (`INSTR > 0`), sem fronteira de palavra — igual ao `if _normalize(kw) in normalized_text` do Python.
+- O **score acumula** os pontos de todos os níveis com match; o **nível retornado** é o primeiro (ALTA > MEDIA > BAIXA) com qualquer match. Sem match / texto vazio ⇒ `'BAIXA'`.
+- **3 exceções:** `e_texto_excede_limite` (texto > 4000 caracteres — a *verificação de limites*), `VALUE_ERROR`, `OTHERS`. Em erro: grava `LOG_ERRO` e **retorna `'BAIXA'`** (coluna destino é `NOT NULL`).
+- ⚠️ Grava DML no tratamento de erro ⇒ deve ser chamada **de dentro de PL/SQL** (atribuição a variável), nunca embutida num `SELECT` ou no `SET` de um `UPDATE` (`ORA-14551`).
+
+### Procedimento 1 — `PRC_LISTAR_COBRANCAS_JSON`
+
+Percorre um **cursor explícito com JOIN de 3 tabelas** (`COBRANCA` + `CLINICA` + `LEFT JOIN SERVICO_PRECO`), chama `FN_COBRANCA_JSON` por linha e imprime **um objeto JSON por linha** com `DBMS_OUTPUT.PUT_LINE`, agrupado por clínica.
+
+- `LEFT JOIN` em `SERVICO_PRECO` proposital (`ID_SERVICO_PRECO` é nullable).
+- Um JSON por linha porque `DBMS_OUTPUT.PUT_LINE` aborta acima de 32.767 bytes/linha.
+- **3 exceções:** `NO_DATA_FOUND`, `VALUE_ERROR`, `OTHERS`. Chamada direta ⇒ grava em `LOG_ERRO` (`ROLLBACK` → `INSERT LOG_ERRO` → `COMMIT` → `DBMS_OUTPUT`).
+
+### Procedimento 2 — `PRC_RELATORIO_COBRANCAS`
+
+Lê a tabela de fatos `COBRANCA` e imprime um relatório totalizado com **três níveis**: soma por combinação `(ID_CLINICA, DS_FORMA_PAGAMENTO)` → **`Sub Total`** por clínica → **`Total Geral`**.
+
+- **Soma 100% manual:** o cursor traz linhas de detalhe, **sem `GROUP BY`, sem `SUM()`, sem `ROLLUP`/`CUBE`/`GROUPING SETS`/`GROUPING`** (proibidos pela rubrica). Toda totalização em **3 acumuladores PL/SQL** por quebra de grupo.
+- **O último grupo é emitido fora do `LOOP`** — não há próxima iteração para detectar a última quebra.
+- **Formato fixo:** larguras fixas, ASCII puro; a coluna numérica termina no mesmo offset nas três formas de linha; nas linhas de total as colunas categóricas ficam literalmente vazias.
+- **3 exceções:** `NO_DATA_FOUND`, `VALUE_ERROR`, `OTHERS` — mesmo padrão do Procedimento 1.
+
+### Gatilho — `TRG_AUDITORIA_COBRANCA` + `AUDITORIA_COBRANCA`
+
+**Tabela de auditoria (BLOCO 6):**
+
+| Coluna | Tipo | Conteúdo |
+|--------|------|----------|
+| `ID_AUDITORIA` | `NUMBER(15)` | PK — `DEFAULT SEQ_AUDITORIA_COBRANCA.NEXTVAL` |
+| `NM_USUARIO` | `VARCHAR2(60)` NOT NULL | `USER` do banco (quem) |
+| `DS_OPERACAO` | `VARCHAR2(10)` NOT NULL | `INSERT` \| `UPDATE` \| `DELETE` (+ `CHECK`) |
+| `DT_OPERACAO` | `TIMESTAMP` NOT NULL | `DEFAULT SYSTIMESTAMP` (quando) |
+| `ID_COBRANCA` | `NUMBER(10)` | PK do registro afetado — **sem FK**, de propósito |
+| `DS_VALORES_OLD` | `VARCHAR2(4000)` | `:OLD` serializado por `FN_COBRANCA_JSON` — nulo em `INSERT` |
+| `DS_VALORES_NEW` | `VARCHAR2(4000)` | `:NEW` serializado por `FN_COBRANCA_JSON` — nulo em `DELETE` |
+
+**Trigger (BLOCO 10):** cabeçalho `AFTER INSERT OR UPDATE OR DELETE ON COBRANCA FOR EACH ROW`.
+
+- `INSERTING` / `UPDATING` / `DELETING` definem `DS_OPERACAO`.
+- `:OLD` é serializado **só** quando `UPDATING OR DELETING`; `:NEW` **só** quando `INSERTING OR UPDATING`.
+- Reusa a **Função 1** para serializar `:OLD`/`:NEW` — custo marginal zero e amarra a entrega numa história só.
+- **Sem bloco `EXCEPTION`** de propósito: a rubrica exige ≥ 3 exceções em *procedimentos e funções* (a trigger não está nessa lista), e um `WHEN OTHERS` mudo **esconderia** falha de auditoria. Como `FN_COBRANCA_JSON` já tem `WHEN OTHERS` com fallback, um erro de serialização não derruba o DML de negócio.
 
 ---
 
 ## Modelo de Tratamento de Erros
 
-Todas as cinco procedures do REQ 1 implementam um padrão uniforme de captura e log de erros baseado na tabela `LOG_ERRO`.
+Padrão herdado da 2ª Sprint (`banco/kura_req1`): cada handler faz `ROLLBACK` → `INSERT INTO LOG_ERRO (..., SQLCODE, SQLERRM, DS_PARAMETROS)` → `COMMIT` → `DBMS_OUTPUT`. Assim o "print de exceção" deixa de ser texto no console e passa a ser **linha persistida** consultável.
 
-**Estrutura da tabela `LOG_ERRO`** (derivada do DDL):
+**Estrutura da tabela `LOG_ERRO`:**
 
 | Coluna | Tipo | Descrição |
 |--------|------|-----------|
-| `ID_LOG` | `NUMBER(15)` | PK gerada por `SEQ_LOG_ERRO.NEXTVAL` |
-| `NM_PROCEDURE` | `VARCHAR2(120)` | Nome da procedure que gerou o erro (constante `c_proc`) |
+| `ID_LOG` | `NUMBER(15)` | PK — `DEFAULT SEQ_LOG_ERRO.NEXTVAL` |
+| `NM_PROCEDURE` | `VARCHAR2(120)` | Nome do objeto que gerou o erro |
 | `NM_USUARIO` | `VARCHAR2(60)` | `USER` Oracle no momento do erro |
 | `DT_ERRO` | `TIMESTAMP` | `SYSTIMESTAMP` no momento do erro |
 | `NR_CODIGO_ERRO` | `NUMBER(10)` | `SQLCODE` (negativo em erros Oracle) |
 | `DS_MENSAGEM_ERRO` | `VARCHAR2(2000)` | Prefixo legível + `SQLERRM` |
 | `DS_PARAMETROS` | `VARCHAR2(2000)` | Parâmetros da chamada que causou o erro |
-| `DS_STACK_TRACE` | `CLOB` | Stack trace completo (opcional — disponível via `DBMS_UTILITY`) |
+| `DS_STACK_TRACE` | `CLOB` | Stack trace completo (opcional) |
 
-> `LOG_ERRO` é criada **sem FKs intencionalmente**: um registro de auditoria jamais deve falhar por violação referencial.
+> `LOG_ERRO` é criada **sem FKs intencionalmente**: um registro de auditoria jamais deve falhar por violação referencial. Mesmo raciocínio em `AUDITORIA_COBRANCA`.
 
-**As três camadas de exceção implementadas em cada procedure:**
+**Exceções por objeto:**
 
-1. **Exceção nomeada específica 1** — `DUP_VAL_ON_INDEX` (violação de `UNIQUE`) **ou** `NO_DATA_FOUND` (FK pai inexistente/inativa)
-2. **Exceção nomeada específica 2** — `VALUE_ERROR` (dado com tipo ou tamanho incompatível com o campo destino)
-3. **Fallback** — `WHEN OTHERS` captura qualquer exceção não tratada pelas camadas anteriores
+| Objeto | Exceção 1 | Exceção 2 | Exceção 3 | Grava `LOG_ERRO`? |
+|--------|-----------|-----------|-----------|:---:|
+| `FN_COBRANCA_JSON` | `NO_DATA_FOUND` | `VALUE_ERROR` | `OTHERS` | **Não** — chamada por trigger (`COMMIT` em trigger é `ORA-04092`) |
+| `FN_CALCULAR_SCORE_URGENCIA` | `e_texto_excede_limite` | `VALUE_ERROR` | `OTHERS` | Sim |
+| `PRC_LISTAR_COBRANCAS_JSON` | `NO_DATA_FOUND` | `VALUE_ERROR` | `OTHERS` | Sim |
+| `PRC_RELATORIO_COBRANCAS` | `NO_DATA_FOUND` | `VALUE_ERROR` | `OTHERS` | Sim |
 
-**Padrão do bloco `EXCEPTION` (copiado de `PRC_INSERT_CLINICA`):**
-
-```sql
-EXCEPTION
-    -- Exceção específica 1: violação de UNIQUE (CNPJ ou e-mail duplicado)
-    WHEN DUP_VAL_ON_INDEX THEN
-        ROLLBACK;
-        INSERT INTO LOG_ERRO (ID_LOG, NM_PROCEDURE, NM_USUARIO, DT_ERRO,
-                              NR_CODIGO_ERRO, DS_MENSAGEM_ERRO, DS_PARAMETROS)
-        VALUES (SEQ_LOG_ERRO.NEXTVAL, c_proc, USER, SYSTIMESTAMP,
-                SQLCODE, 'DUP_VAL_ON_INDEX: CNPJ ou e-mail ja cadastrado. ' || SQLERRM,
-                'NM_CLINICA=' || p_nm_clinica || ' | NR_CNPJ=' || p_nr_cnpj);
-        COMMIT;
-        DBMS_OUTPUT.PUT_LINE('[ERRO] Clinica duplicada — log gravado.');
-    -- Exceção específica 2: valor fora do tamanho do campo
-    WHEN VALUE_ERROR THEN
-        ROLLBACK;
-        INSERT INTO LOG_ERRO (ID_LOG, NM_PROCEDURE, NM_USUARIO, DT_ERRO,
-                              NR_CODIGO_ERRO, DS_MENSAGEM_ERRO, DS_PARAMETROS)
-        VALUES (SEQ_LOG_ERRO.NEXTVAL, c_proc, USER, SYSTIMESTAMP,
-                SQLCODE, 'VALUE_ERROR: Campo com tamanho/tipo invalido. ' || SQLERRM,
-                'NM_CLINICA=' || p_nm_clinica);
-        COMMIT;
-        DBMS_OUTPUT.PUT_LINE('[ERRO] Valor invalido — log gravado.');
-    WHEN OTHERS THEN
-        ROLLBACK;
-        INSERT INTO LOG_ERRO (ID_LOG, NM_PROCEDURE, NM_USUARIO, DT_ERRO,
-                              NR_CODIGO_ERRO, DS_MENSAGEM_ERRO, DS_PARAMETROS)
-        VALUES (SEQ_LOG_ERRO.NEXTVAL, c_proc, USER, SYSTIMESTAMP,
-                SQLCODE, 'OTHERS: ' || SQLERRM,
-                'NM_CLINICA=' || p_nm_clinica || ' | NR_CNPJ=' || p_nr_cnpj);
-        COMMIT;
-        DBMS_OUTPUT.PUT_LINE('[ERRO] Erro inesperado — log gravado.');
-END PRC_INSERT_CLINICA;
-```
-
-Em todos os handlers: o `INSERT` no `LOG_ERRO` é seguido de `COMMIT` autônomo, garantindo que o registro de auditoria seja persistido mesmo após o `ROLLBACK` da transação principal.
+> `TRG_AUDITORIA_COBRANCA` **não** tem bloco `EXCEPTION` — de propósito (ver seção do gatilho).
 
 ---
 
@@ -368,69 +310,45 @@ Em todos os handlers: o `INSERT` no `LOG_ERRO` é seguido de `COMMIT` autônomo,
 
 | Requisito | Versão mínima | Observação |
 |-----------|--------------|------------|
-| Oracle Database | 19c | `GENERATED BY DEFAULT AS IDENTITY` requer 12c+; `INTERVAL` literals requer 9i+ |
-| Oracle SQL Developer | 21.x+ | Para visualização de `DBMS_OUTPUT` |
-| Usuário Oracle | Qualquer | Necessita `CREATE TABLE`, `CREATE SEQUENCE`, `CREATE PROCEDURE`, `CREATE VIEW` |
+| Oracle Database | 12c (entregue no **19c** da FIAP) | `DEFAULT SEQ.NEXTVAL` e `GENERATED BY DEFAULT AS IDENTITY` exigem 12c+ |
+| Oracle SQL Developer | 21.x+ (ou SQLcl) | Recomendado — evita mojibake por `NLS_LANG` mal configurado; necessário para ver o `DBMS_OUTPUT` |
+| Usuário Oracle | Qualquer schema de aluno | Necessita `CREATE TABLE`, `CREATE SEQUENCE`, `CREATE PROCEDURE`, `CREATE TRIGGER`, `CREATE VIEW` |
 
 ---
 
 ## Como Executar
 
-O arquivo `src/kura_schema_final_entrega.sql` é o único arquivo de entrega. Ele contém o DDL completo (Seção 1) e todos os blocos PL/SQL REQ 1–4 (Seções 2–5) em ordem de execução correta.
+`src/banco_kura_final.sql` é o **único arquivo de entrega**. Contém DDL, carga e todo o PL/SQL em ordem de execução correta.
 
 ```
 1. Clone o repositório
-2. Abra o Oracle SQL Developer (ou SQLcl)
-3. Conecte ao schema de destino
-4. Execute: SET SERVEROUTPUT ON SIZE UNLIMITED;
-5. Execute o arquivo completo: src/kura_schema_final_entrega.sql
-6. Verifique a saída do DBMS_OUTPUT para confirmação de cada seção
+2. Abra o Oracle SQL Developer (ou SQLcl), conectado ao schema de aluno
+3. Run Script (F5) — não "Run Statement"
+   (o BLOCO 0 já faz SET SERVEROUTPUT ON SIZE UNLIMITED e SET LINESIZE 400)
+4. Acompanhe a saída do DBMS_OUTPUT: cada bloco imprime um PROMPT de início/fim
 ```
 
-A saída esperada inclui mensagens `[OK]` de cada procedure de carga e os relatórios formatados dos quatro REQs (Relatórios A, B, C, I, II, III e IV).
-
-> ⚠️ **Atenção:** Para re-execução em ambiente existente, descomente o bloco `DROP` na Seção 0 do arquivo antes de executar. A ordem de `DROP` respeita as dependências de FK em cascata (tabelas filhas antes das tabelas pai).
+**O que esperar:**
+- Blocos 0–7 (estrutura + carga) rodam com **0 linhas `ORA-`**.
+- Blocos 8–10 compilam os 5 objetos sem erro.
+- O bloco 11 (demonstração) exercita os 5 objetos no caminho feliz **e dispara cada exceção tratada** — as exceções são **tratadas** (não vazam), então a saída do bloco 11 pode conter a string `ORA-01403` etc. dentro do `SQLERRM` que os handlers registram: isso é **evidência de que o tratamento de erro funciona**.
 
 ---
 
 ## Re-execução e Limpeza
 
-O arquivo contém um bloco `DROP` comentado na **Seção 0** (linhas 89–140). Ele está comentado por padrão para evitar destruição acidental do schema em primeira execução.
+O script é **idempotente**. O **BLOCO 1** derruba, **por nome**, apenas os objetos do KURA (as 30 tabelas, as 29 sequences, a tabela e a sequence da Sprint 3, e os objetos PL/SQL — atual e da tentativa anterior) — nunca objetos de outras disciplinas presentes no mesmo schema de aluno.
 
-**Por que está comentado:**
-- Na primeira execução, as tabelas ainda não existem — descomentado causaria erros `ORA-00942`.
-- Em ambientes de avaliação, a intenção é executar apenas uma vez sobre um schema limpo.
-
-**Ordem de DROP (FK-safe — tabelas filhas antes das pai):**
-
-```sql
--- DROP TABLE IDEMPOTENCY_KEY              CASCADE CONSTRAINTS;
--- DROP TABLE CONSENTIMENTO                CASCADE CONSTRAINTS;
--- DROP TABLE CONTA_TUTOR                  CASCADE CONSTRAINTS;
--- DROP TABLE AGENDAMENTO                  CASCADE CONSTRAINTS;
--- DROP TABLE TRIAGEM_LUNA                 CASCADE CONSTRAINTS;
--- DROP TABLE ALERTA_TEMPERATURA           CASCADE CONSTRAINTS;
--- DROP TABLE LEITURA_TEMPERATURA          CASCADE CONSTRAINTS;
--- ... (continua até CLINICA e LOG_ERRO)
--- DROP SEQUENCE SEQ_CLINICA;
--- ... (22 sequences)
--- DROP VIEW VW_TIMELINE_PET;
--- DROP VIEW VW_VACINAS_VENCENDO;
-```
-
-**Para re-executar do zero via SQLcl:**
-
-```bash
-# Edite o arquivo e descomente o bloco DROP (Seção 0, linhas 89-140)
-# Depois execute:
-sql <user>/<password>@<host>:1521/<service> @src/kura_schema_final_entrega.sql
-```
+- Cada `DROP` é isolado num bloco PL/SQL com `EXCEPTION WHEN OTHERS THEN NULL`: se o objeto não existe (primeira execução), o erro (`ORA-00942` / `ORA-02289` / `ORA-04043` / `ORA-04080`) é engolido e o script segue.
+- `DROP TABLE ... CASCADE CONSTRAINTS PURGE` dispensa a ordem inversa de FK.
+- Rodar 2× seguidas dá o mesmo resultado.
+- Objetos PL/SQL da Sprint 1/2 do próprio KURA (`PRC_INSERT_*`) podem ficar `INVALID` após o BLOCO 1 — esperado, recompilam sozinhos.
 
 ---
 
 ## Diagrama Entidade-Relacionamento
 
-Entidades centrais do domínio (10 de 26 tabelas):
+Entidades centrais do domínio (12 de 30 tabelas), incluindo o módulo financeiro da Sprint 3:
 
 ```mermaid
 erDiagram
@@ -452,13 +370,11 @@ erDiagram
         number ID_VETERINARIO PK
         number ID_CLINICA FK
         varchar2 NM_VETERINARIO
-        varchar2 NR_CRMV
     }
     TUTOR {
         number ID_TUTOR PK
         number ID_CLINICA FK
         varchar2 NM_TUTOR
-        varchar2 NR_CPF
     }
     PET {
         number ID_PET PK
@@ -479,30 +395,35 @@ erDiagram
         number ID_CLINICA FK
         number ID_TUTOR FK
         number ID_PET FK
-        number ID_VETERINARIO FK
         varchar2 ST_STATUS
     }
-    CONTA_TUTOR {
-        number ID_CONTA PK
-        number ID_TUTOR FK
-        varchar2 DS_EMAIL_LOGIN
-    }
-    DISPOSITIVO_IOT {
-        number ID_DISPOSITIVO PK
+    SERVICO_PRECO {
+        number ID_SERVICO_PRECO PK
         number ID_CLINICA FK
-        varchar2 CD_DISPOSITIVO
+        varchar2 NM_SERVICO
+        number VL_PRECO
     }
-    LEITURA_TEMPERATURA {
-        number ID_LEITURA PK
-        number ID_DISPOSITIVO_IOT FK
-        number VL_TEMPERATURA
-        timestamp DT_LEITURA
+    COBRANCA {
+        number ID_COBRANCA PK
+        number ID_EVENTO_CLINICO FK
+        number ID_CLINICA FK
+        number ID_SERVICO_PRECO FK
+        number VL_COBRADO
+        varchar2 DS_FORMA_PAGAMENTO
     }
-    LOG_ERRO {
-        number ID_LOG PK
-        varchar2 NM_PROCEDURE
-        timestamp DT_ERRO
-        number NR_CODIGO_ERRO
+    AUDITORIA_COBRANCA {
+        number ID_AUDITORIA PK
+        varchar2 NM_USUARIO
+        varchar2 DS_OPERACAO
+        number ID_COBRANCA
+        varchar2 DS_VALORES_OLD
+        varchar2 DS_VALORES_NEW
+    }
+    TRIAGEM_LUNA {
+        number ID_TRIAGEM PK
+        number ID_CLINICA FK
+        number ID_PET FK
+        varchar2 DS_NIVEL_URGENCIA
     }
 
     CLINICA ||--o{ VETERINARIO : "FK_VET_CLINICA"
@@ -510,26 +431,28 @@ erDiagram
     CLINICA ||--o{ PET : "FK_PET_CLINICA"
     CLINICA ||--o{ EVENTO_CLINICO : "FK_EV_CLINICA"
     CLINICA ||--o{ AGENDAMENTO : "FK_AGEND_CLINICA"
-    CLINICA ||--o{ DISPOSITIVO_IOT : "FK_IOT_CLINICA"
+    CLINICA ||--o{ SERVICO_PRECO : "FK_SERVICO_PRECO_CLINICA"
+    CLINICA ||--o{ COBRANCA : "FK_COBRANCA_CLINICA"
+    CLINICA ||--o{ TRIAGEM_LUNA : "FK_TRIAGEM_CLINICA"
     ESPECIE ||--o{ RACA : "FK_RACA_ESPECIE"
     ESPECIE ||--o{ PET : "FK_PET_ESPECIE"
     RACA |o--o{ PET : "FK_PET_RACA"
-    VETERINARIO |o--o{ PET : "FK_PET_VET_RESP"
     VETERINARIO |o--o{ EVENTO_CLINICO : "FK_EV_VETERINARIO"
     VETERINARIO |o--o{ AGENDAMENTO : "FK_AGEND_VET"
     PET |o--o{ EVENTO_CLINICO : "FK_EV_PET"
     PET |o--o{ AGENDAMENTO : "FK_AGEND_PET"
+    PET |o--o{ TRIAGEM_LUNA : "FK_TRIAGEM_PET"
     TUTOR |o--o{ AGENDAMENTO : "FK_AGEND_TUTOR"
-    TUTOR ||--|| CONTA_TUTOR : "FK_CONTA_TUTOR"
-    DISPOSITIVO_IOT ||--o{ LEITURA_TEMPERATURA : "FK_LEITURA_DISP"
-    EVENTO_CLINICO |o--o{ AGENDAMENTO : "FK_AGEND_EVENTO"
+    EVENTO_CLINICO ||--o{ COBRANCA : "FK_COBRANCA_EVENTO"
+    SERVICO_PRECO |o--o{ COBRANCA : "FK_COBRANCA_SERVICO"
+    COBRANCA }o..o{ AUDITORIA_COBRANCA : "TRG_AUDITORIA_COBRANCA (sem FK)"
 ```
 
 ---
 
 ## Variáveis de Ambiente / Conexão
 
-Este repositório não contém código de aplicação — as strings de conexão residem nos repositórios dos backends .NET e Java. Para referência, o template de variáveis de ambiente esperado pelos backends é:
+Este repositório não contém código de aplicação — as strings de conexão residem nos repositórios dos backends .NET e Java. Para referência, o template esperado pelos backends é:
 
 ```env
 DB_HOST=<oracle-host>
@@ -539,7 +462,19 @@ DB_USER=<schema-owner>
 DB_PASSWORD=<password>
 ```
 
-A infraestrutura Oracle é provida pela FIAP (parceria FIAP × Oracle — instância sempre ativa). Não é necessário container Docker local para o Oracle em avaliação.
+A infraestrutura Oracle é provida pela FIAP (parceria FIAP × Oracle — instância sempre ativa). Não é necessário container Docker local.
+
+---
+
+## Documentação
+
+| Arquivo | Conteúdo |
+|---------|----------|
+| `docs/Documentacao_Tecnica_Kura.pdf` | Documentação técnica completa da Sprint 3 (objeto a objeto, prints, decisões de banca) |
+| `docs/kura_modelo_logico.pdf` | Modelo lógico do banco |
+| `docs/kura_modelo_relacional.pdf` | Modelo relacional do banco |
+| `docs/banco_kura_doc.md` | Fonte Markdown da documentação técnica |
+| `docs/prints/` | 14 capturas de tela da saída do BLOCO 11 |
 
 ---
 
@@ -547,11 +482,12 @@ A infraestrutura Oracle é provida pela FIAP (parceria FIAP × Oracle — instâ
 
 | Nome | RM | Responsabilidade |
 |------|----|-----------------|
-| Felipe Ferrete  | RM562999 | Tech lead · .NET · IoT · IA |
-| Clayton Alves   | RM562285 | DevOps · BD |
-| Nikolas Brisola | RM564371 | Java · Backend Tutor |
-| Guilherme Sola  | RM563674 | Mobile Tutor · UX |
-| Gustavo Bosak   | RM566315 | Mobile Clínica · QA |
+| Felipe Ferrete Soares Lemes | RM562999 | Tech lead · .NET · IoT · IA |
+| Clayton Alves dos Santos | RM562285 | DevOps · BD |
+| Nikolas Henrique de Souza Lemes Brisola | RM564371 | Java · Backend Tutor |
+| Guilherme Sola Garcia | RM563674 | Mobile Tutor · UX |
+| Gustavo Bosak Santos | RM566315 | Mobile Clínica · QA |
+
 ---
 
 ## Licença
