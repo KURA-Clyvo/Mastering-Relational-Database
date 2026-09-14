@@ -6,17 +6,13 @@
 -- #############################################################################
 -- #
 -- #  INTEGRANTES (ordem alfabetica pelo primeiro nome):
--- #    - Clayton Alves ................ RM562285
--- #    - Felipe Ferrete Soares Lemes .. RM562999
--- #    - Guilherme Sola ............... RM563674
--- #    - Gustavo Bosak ............... RM566315
--- #    - Nikolas Brisola ............. RM564371
--- #  NOTA: a rubrica exige NOMES COMPLETOS. Apenas Felipe tem nome completo
--- #  registrado em arquivo; os outros 4 aparecem como nome + sobrenome. Os nomes
--- #  completos e o "X"/"2024" do nome deste arquivo dependem de confirmacao
--- #  humana (professor + integrantes) - ver o PDF de entrega (SD-09).
+-- #    - Clayton Alves dos Santos................... RM562285
+-- #    - Felipe Ferrete Soares Lemes ............... RM562999
+-- #    - Guilherme Sola Guarcia..................... RM563674
+-- #    - Gustavo Bosak Santos....................... RM566315
+-- #    - Nikolas Henrique de Souza Lemes Brisola ... RM564371
 -- #
--- #  Turma:      2TDSX  (2o ano, Analise e Desenvolvimento de Sistemas)
+-- #  Turma:      2TDSPF  (2o ano, Analise e Desenvolvimento de Sistemas)
 -- #  Data:       2026-09-08
 -- #  Banco:      Oracle Database 19c Enterprise Edition (parceria FIAP x Oracle)
 -- #
