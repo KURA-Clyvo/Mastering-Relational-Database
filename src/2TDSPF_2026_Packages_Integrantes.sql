@@ -537,6 +537,7 @@ DECLARE
     v_n       PLS_INTEGER;
     v_cob     PLS_INTEGER;
     v_aud     PLS_INTEGER;
+    v_marca   VARCHAR2(100) := 'marcadora pendente do chamador ' || TO_CHAR(SYSTIMESTAMP, 'YYYYMMDDHH24MISSFF6');
     r         LOG_ERRO%ROWTYPE;
 
     PROCEDURE confere (p_caso IN VARCHAR2, p_esperado IN VARCHAR2, p_obtido IN VARCHAR2) IS
@@ -546,8 +547,9 @@ DECLARE
             DBMS_OUTPUT.PUT_LINE('OK: ' || p_caso);
         ELSE
             v_falhou := v_falhou + 1;
-            DBMS_OUTPUT.PUT_LINE('FALHOU: ' || p_caso || ' (esperado ' || NVL(p_esperado, '(nulo)')
-                                 || ', obtido ' || NVL(p_obtido, '(nulo)') || ')');
+            DBMS_OUTPUT.PUT_LINE('FALHOU: ' || p_caso || ' (esperado ' || SUBSTR(NVL(p_esperado, '(nulo)'), 1, 100)
+                                 || ', obtido ' || SUBSTR(NVL(p_obtido, '(nulo)'), 1, 100)
+                                 || CASE WHEN LENGTH(p_obtido) > 100 THEN '... [' || LENGTH(p_obtido) || ' chars]' END || ')');
         END IF;
     END confere;
 
@@ -580,7 +582,7 @@ DECLARE
         n PLS_INTEGER;
     BEGIN
         SELECT COUNT(*) INTO n FROM LOG_ERRO
-         WHERE NM_PROCEDURE = 'DEMO_S4_TX' AND NM_USUARIO = USER AND NR_CODIGO_ERRO = -20997;
+         WHERE NM_PROCEDURE = 'DEMO_S4_TX' AND NM_USUARIO = USER AND DS_MENSAGEM_ERRO = v_marca;
         RETURN n;
     END n_marca;
 
@@ -677,7 +679,7 @@ BEGIN
     DBMS_OUTPUT.PUT_LINE('---- D.3 a transacao do CHAMADOR sobrevive ao log autonomo (sem DDL) ----');
     -- Linha marcadora PENDENTE (sem COMMIT) = trabalho nao confirmado do chamador.
     INSERT INTO LOG_ERRO (NM_PROCEDURE, NM_USUARIO, NR_CODIGO_ERRO, DS_MENSAGEM_ERRO)
-    VALUES ('DEMO_S4_TX', USER, -20997, 'marcadora pendente do chamador (sera desfeita pelo ROLLBACK)');
+    VALUES ('DEMO_S4_TX', USER, -20997, v_marca);
     v_tx_ant := DBMS_TRANSACTION.LOCAL_TRANSACTION_ID;
     confere('D.3 ha transacao pendente antes da chamada', 'SIM', CASE WHEN v_tx_ant IS NULL THEN 'NAO' ELSE 'SIM' END);
     confere('D.3 marcadora visivel antes da chamada', '1', TO_CHAR(n_marca));
