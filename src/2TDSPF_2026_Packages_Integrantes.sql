@@ -302,8 +302,9 @@ PROMPT === BLOCO 3: PKG_KURA_LOG criado ===
 -- #    6. a chamada de log e feita por log_seguro (privada): se o PKG_KURA_LOG
 -- #       estiver inutilizavel, a funcao ainda devolve 'BAIXA' (ver abaixo).
 -- #  Em erro a funcao retorna 'BAIXA' e nao propaga - inclusive com o BODY do
--- #  PKG_KURA_LOG invalido (medido). Com a SPEC do PKG_KURA_LOG invalida o proprio
--- #  PKG_TRIAGEM nao compila: quem pega isso e o BLOCO 5.
+-- #  PKG_KURA_LOG invalido (medido). Com a SPEC do PKG_KURA_LOG invalida
+-- #  o BODY do PKG_TRIAGEM tambem fica INVALID e a chamada propaga ORA-06508
+-- #  (medido): esse caso nao e tratavel dentro da funcao, quem o pega e o BLOCO 5.
 -- #
 -- #  LGPD: DS_PARAMETROS recebe so 'len=<tamanho>' - nunca o texto do tutor.
 -- #############################################################################
