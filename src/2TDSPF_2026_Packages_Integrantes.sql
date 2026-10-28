@@ -218,14 +218,19 @@ CREATE OR REPLACE PACKAGE BODY PKG_KURA_LOG AS
     ) IS
         PRAGMA AUTONOMOUS_TRANSACTION;
         v_trace VARCHAR2(32767);
+        v_orig  VARCHAR2(200);
+        v_msg   VARCHAR2(4000);
+        v_par   VARCHAR2(4000);
     BEGIN
         v_trace := DBMS_UTILITY.FORMAT_ERROR_BACKTRACE;
+        -- funcao de package nao pode ser chamada de dentro do SQL (PLS-00231):
+        -- os valores sao calculados em variaveis antes do INSERT.
+        v_orig := corta_bytes(p_origem, c_max_origem);
+        v_msg  := corta_bytes(NVL(p_mensagem, '(sem mensagem)'), c_max_mensagem);
+        v_par  := corta_bytes(p_parametros, c_max_parametro);
         INSERT INTO LOG_ERRO (NM_PROCEDURE, NM_USUARIO, NR_CODIGO_ERRO,
                               DS_MENSAGEM_ERRO, DS_PARAMETROS, DS_STACK_TRACE)
-        VALUES (corta_bytes(p_origem, c_max_origem), USER, p_codigo,
-                corta_bytes(NVL(p_mensagem, '(sem mensagem)'), c_max_mensagem),
-                corta_bytes(p_parametros, c_max_parametro),
-                v_trace);
+        VALUES (v_orig, USER, p_codigo, v_msg, v_par, v_trace);
         COMMIT;
     EXCEPTION
         WHEN OTHERS THEN
@@ -452,11 +457,11 @@ BEGIN
     DBMS_OUTPUT.PUT_LINE('  retornou (apos tratar): ' || v);
 END;
 /
-PROMPT -- (b) 3000 caracteres de 2 bytes (6000 bytes > buffer de 4000) => VALUE_ERROR (-6502)
+PROMPT -- (b) 3000 caracteres de 2 bytes que sobrevivem a normalizacao (6000 bytes > buffer de 4000) => VALUE_ERROR (-6502)
 DECLARE
     v VARCHAR2(10);
 BEGIN
-    v := PKG_TRIAGEM.fn_calcular_score_urgencia(RPAD(UNISTR('\00E3'), 3000, UNISTR('\00E3')));
+    v := PKG_TRIAGEM.fn_calcular_score_urgencia(RPAD(UNISTR('\00F1'), 3000, UNISTR('\00F1')));
     DBMS_OUTPUT.PUT_LINE('  retornou (apos tratar): ' || v);
 END;
 /
