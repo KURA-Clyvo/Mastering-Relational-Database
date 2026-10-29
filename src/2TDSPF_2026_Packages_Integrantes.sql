@@ -2160,7 +2160,8 @@ BEGIN
             confere('E.4c listar_json identico byte a byte sob BRAZIL', '0', TO_CHAR(DBMS_LOB.COMPARE(v_c, v_c3)));
             PKG_COBRANCA.relatorio_json(v_clin, v_c4);
             confere('E.4d relatorio_json identico byte a byte sob BRAZIL', '0', TO_CHAR(DBMS_LOB.COMPARE(v_c2, v_c4)));
-            confere('E.4d relatorio_json sob BRAZIL nao tem virgula decimal', '0', TO_CHAR(conta(v_c4, ',00')));
+            confere('E.4e nenhum numero com virgula decimal (listar_json e relatorio_json sob BRAZIL)', '0',
+                    TO_CHAR(REGEXP_INSTR(v_c3, '[0-9],[0-9][0-9][,}]') + REGEXP_INSTR(v_c4, '[0-9],[0-9][0-9][,}]')));
         EXCEPTION
             WHEN OTHERS THEN
                 restaura_nls;
