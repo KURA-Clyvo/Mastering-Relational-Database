@@ -1,5 +1,6 @@
-![Oracle](https://img.shields.io/badge/Oracle-19c-F80000?logo=oracle)
-![PL/SQL](https://img.shields.io/badge/PL%2FSQL-2_fn_·_2_proc_·_1_trigger-3A5235)
+![Oracle](https://img.shields.io/badge/Oracle-Database-F80000?logo=oracle)
+![PL/SQL](https://img.shields.io/badge/PL%2FSQL-4_packages_·_1_trigger_fina-3A5235)
+![MongoDB](https://img.shields.io/badge/MongoDB-7-47A248?logo=mongodb)
 ![3NF](https://img.shields.io/badge/Normal_Form-3FN-4A6845)
 ![Tables](https://img.shields.io/badge/Tables-30-555)
 ![Sequences](https://img.shields.io/badge/Sequences-29_(+1)-555)
@@ -14,6 +15,21 @@ O schema real do KURA é mantido por **19 migrations Flyway** no repositório `b
 
 O script é **re-executável**: o BLOCO 1 (limpeza idempotente) derruba, **por nome**, apenas os objetos do KURA — nunca um `DROP` genérico —, porque o schema de aluno da FIAP é **compartilhado entre várias disciplinas**. Nenhuma credencial, host ou connection string aparece no arquivo; toda a carga do BLOCO 7 é fictícia e declarada como tal.
 
+### Sprint 4 em uma página
+
+A Sprint 4 **soma** quatro coisas à entrega da Sprint 3, sem alterá-la:
+
+1. **Empacotamento** (`src/2TDSPF_2026_Packages_Integrantes.sql`): as rotinas viram quatro packages (`PKG_KURA_LOG`, `PKG_TRIAGEM`, `PKG_COBRANCA`, `PKG_AUDITORIA`) e a trigger passa a ser fina. Saída de emergência: `src/2TDSPF_2026_Packages_Remover.sql`.
+2. **Integração**: a API .NET do KURA chama dois procedimentos do `PKG_COBRANCA` (`listar_json` e `relatorio_json`), sempre com a clínica do usuário autenticado.
+3. **Exportação JSON** (`scripts/2TDSPF_2026_Exportar_Json.sql` → `data/2TDSPF_2026_Dataset_Cobrancas.json`), gerada pelo próprio package.
+4. **MongoDB** (`mongo/2TDSPF_2026_MongoDB_Integrantes.js`): importação, `$jsonSchema`, índices e o relatório da Sprint 3 refeito como agregação.
+
+O arquivo da Sprint 3 (`src/2TDSPF_2026_CodigoSql_Integrantes.sql`), o PDF e os modelos lógico e relacional **continuam exatamente como foram entregues**; as seções da Sprint 3 abaixo ficam como histórico.
+
+> **Onde a Sprint 4 foi provada.** Em um **Oracle XE 21c local (Docker)**, com o schema do produto criado pelo Flyway, e com a API .NET rodando em container contra ele. **Não** foi provada no Oracle do Azure: a instalação dos packages lá ainda não foi executada. Detalhes e limites na seção [Arquitetura de execução](#arquitetura-de-execução).
+
+> **Sobre a contagem de migrations.** O texto da Sprint 3 abaixo fala em 19 migrations (estado V19). O produto hoje aplica **22 migrations (V1 a V23, sem a V20)**. As migrations V20 a V23 não tocam `COBRANCA`, `SERVICO_PRECO` nem `LOG_ERRO` (busca por esses nomes nos cinco arquivos: 0 ocorrências nas migrations; o mesmo comando acha 1 em um teste, usado como controle positivo), então o recorte da Sprint 3 segue compatível com o banco do produto.
+
 ---
 
 ## Sumário
@@ -21,25 +37,39 @@ O script é **re-executável**: o BLOCO 1 (limpeza idempotente) derruba, **por n
 - [Arquitetura](#arquitetura)
   - [Domínios e Propriedade das Tabelas](#domínios-e-propriedade-das-tabelas)
   - [Estratégia de Chave Primária](#estratégia-de-chave-primária)
+  - [Arquitetura de execução](#arquitetura-de-execução)
 - [Estrutura do Schema](#estrutura-do-schema)
   - [Blocos do arquivo](#blocos-do-arquivo)
   - [Tabelas (30)](#tabelas-30)
   - [Sequences (29 + 1)](#sequences-29--1)
   - [Índices (13 + 2)](#índices-13--2)
   - [Views (2)](#views-2)
-- [Objetos PL/SQL da Sprint 3](#objetos-plsql-da-sprint-3)
+- [Objetos PL/SQL da Sprint 3](#objetos-plsql-da-sprint-3) (histórico: o que foi entregue na Sprint 3)
   - [Função 1 — `FN_COBRANCA_JSON`](#função-1--fn_cobranca_json)
   - [Função 2 — `FN_CALCULAR_SCORE_URGENCIA`](#função-2--fn_calcular_score_urgencia)
   - [Procedimento 1 — `PRC_LISTAR_COBRANCAS_JSON`](#procedimento-1--prc_listar_cobrancas_json)
   - [Procedimento 2 — `PRC_RELATORIO_COBRANCAS`](#procedimento-2--prc_relatorio_cobrancas)
   - [Gatilho — `TRG_AUDITORIA_COBRANCA` + `AUDITORIA_COBRANCA`](#gatilho--trg_auditoria_cobranca--auditoria_cobranca)
+- [Sprint 4 — Empacotamento](#sprint-4--empacotamento)
+  - [Os quatro packages e a trigger fina](#os-quatro-packages-e-a-trigger-fina)
+  - [Por que a trigger fica fora do package](#por-que-a-trigger-fica-fora-do-package)
+  - [Mapa: objeto da Sprint 3 → rotina do package](#mapa-objeto-da-sprint-3--rotina-do-package)
+  - [Decisões de projeto dos packages](#decisões-de-projeto-dos-packages)
+  - [Códigos de saída do instalador](#códigos-de-saída-do-instalador)
 - [Modelo de Tratamento de Erros](#modelo-de-tratamento-de-erros)
+  - [Sprint 4 — transação autônoma e códigos próprios](#sprint-4--transação-autônoma-e-códigos-próprios)
+- [Integração com o Backend (.NET)](#integração-com-o-backend-net)
+- [Exportação JSON](#exportação-json)
+- [MongoDB](#mongodb)
 - [Pré-requisitos](#pré-requisitos)
 - [Como Executar](#como-executar)
+  - [Sprint 4: ordem de execução](#sprint-4-ordem-de-execução)
 - [Re-execução e Limpeza](#re-execução-e-limpeza)
+  - [Sprint 4: reinstalar, remover e recomeçar](#sprint-4-reinstalar-remover-e-recomeçar)
 - [Diagrama Entidade-Relacionamento](#diagrama-entidade-relacionamento)
 - [Variáveis de Ambiente / Conexão](#variáveis-de-ambiente--conexão)
 - [Documentação](#documentação)
+- [Vídeo da Sprint 4](#vídeo-da-sprint-4)
 - [Equipe](#equipe)
 - [Licença](#licença)
 
@@ -72,6 +102,38 @@ O schema adota — **fiel ao banco real, sem uniformização** — duas estraté
 | `GENERATED BY DEFAULT AS IDENTITY` | 4 | `CONTA_TUTOR`, `CONSENTIMENTO`, `IDEMPOTENCY_KEY`, `AGENDAMENTO` | Padrão Java-owned. `AGENDAMENTO` é `IDENTITY` no banco **e** puxa de `SEQ_AGENDAMENTO` pela entidade JPA (`GenerationType.SEQUENCE`) — as duas coisas coexistem porque `GENERATED BY DEFAULT` (≠ `GENERATED ALWAYS`) aceita valor explícito |
 
 > `TUTOR_PET` tem PK composta `(ID_TUTOR, ID_PET)` — sem sequence.
+
+### Arquitetura de execução
+
+A arquitetura de nuvem do produto é: três Web Apps (App Service) — API da clínica (.NET), API do tutor (Java) e a Luna (Python) —, dois Static Web Apps e **uma VM privada** com **Oracle XE 21c e MongoDB 7 em containers** (portas 1521 e 27017 acessíveis só a partir da subnet dos Web Apps; sem SSH). A descrição completa está no repositório `DevOps-Cloud` (`docs/ARQUITETURA.md`).
+
+```
+Static Web Apps (clínica · tutor) ──HTTPS──► App Service
+                                             ├─ API da clínica (.NET)  ──┐
+                                             ├─ API do tutor (Java, Flyway)
+                                             └─ Luna (Python)            │
+                                                                         ▼
+                            VM privada ── Oracle XE 21c, schema KURA  ◄── onde os packages devem morar
+                                       └─ MongoDB 7 (base do produto, kura_docs)
+```
+
+Consequências para esta entrega:
+
+- **O schema da aplicação é `KURA`.** A rubrica pede "a mesma base de dados relacional usada pelo backend"; por isso os packages são instalados nesse schema, e não em um schema de aluno à parte. Quem cria as tabelas é o Flyway (migrations do `backend-tutor-java`).
+- **O instalador dos packages é não destrutivo** (só cria ou troca objetos PL/SQL e cria `AUDITORIA_COBRANCA` se ela não existir). O arquivo da Sprint 3 **não** pode ser executado nesse schema: o BLOCO 1 dele derruba as 30 tabelas. Ver [Re-execução e Limpeza](#re-execução-e-limpeza).
+- **A trigger instalada no schema da aplicação dispara em todo `INSERT`/`UPDATE`/`DELETE` de `COBRANCA` feito pela API.** Por isso existe a ordem de instalação sem janela e a saída de emergência (`2TDSPF_2026_Packages_Remover.sql`).
+- **O MongoDB da disciplina é separado do MongoDB do produto**: um `mongo:7` local, base `kura_disciplina`. A base `kura_docs` do produto não é tocada.
+
+**O que foi provado, e onde:**
+
+| Alegação | Onde foi medida |
+|---|---|
+| 4 packages e a trigger instalam e ficam `VALID`; a demonstração embutida termina em `RESUMO: n OK, 0 FALHOU` | Oracle XE 21c local, schema `KURA` criado pelo Flyway (22 migrations), com e sem dados; e no schema da carga da Sprint 3 |
+| A API .NET chama `listar_json` e `relatorio_json`, escopadas pela clínica do JWT, com duas clínicas | Oracle XE 21c local; API construída de `backend-clinica-dotnet@7167076` em container |
+| JSON do package = arquivo versionado = entrada do `mongoimport`; `countDocuments` = `COUNT(*)`; agregação = relatório da Sprint 3 | Oracle XE 21c local e `mongo:7` local |
+| Suíte automatizada da .NET (1435 testes, 0 falhas em `7167076`) | **InMemory: não executa PL/SQL.** Não é prova de Oracle |
+| Instalação dos packages no Oracle da VM do Azure | **Não executada** |
+| Vídeo demonstrativo | Ver [Vídeo da Sprint 4](#vídeo-da-sprint-4) |
 
 ---
 
@@ -189,6 +251,8 @@ Versão consolidada = a da migration V6 (aliases renomeados para os nomes canôn
 
 ## Objetos PL/SQL da Sprint 3
 
+> **Histórico (Sprint 3).** Esta seção descreve os cinco objetos **como foram entregues na Sprint 3** e como existem em `src/2TDSPF_2026_CodigoSql_Integrantes.sql`. Na Sprint 4 as quatro rotinas viram membros de packages e a trigger fica fina — ver [Sprint 4 — Empacotamento](#sprint-4--empacotamento) e o mapa [objeto da Sprint 3 → rotina do package](#mapa-objeto-da-sprint-3--rotina-do-package). Instalar o arquivo de packages sobre o schema da Sprint 3 **remove** as versões standalone (BLOCO 9 do instalador).
+
 Os cinco objetos **não são cinco exercícios isolados** — são um recorte do sistema, todo girando em torno da tabela de fatos **`COBRANCA`**:
 
 ```
@@ -272,6 +336,64 @@ Lê a tabela de fatos `COBRANCA` e imprime um relatório totalizado com **três 
 - Reusa a **Função 1** para serializar `:OLD`/`:NEW` — custo marginal zero e amarra a entrega numa história só.
 - **Sem bloco `EXCEPTION`** de propósito: a rubrica exige ≥ 3 exceções em *procedimentos e funções* (a trigger não está nessa lista), e um `WHEN OTHERS` mudo **esconderia** falha de auditoria. Como `FN_COBRANCA_JSON` já tem `WHEN OTHERS` com fallback, um erro de serialização não derruba o DML de negócio.
 
+## Sprint 4 — Empacotamento
+
+A rubrica pede objetos "empacotados, agrupados de maneira lógica e acessível". O arquivo **`src/2TDSPF_2026_Packages_Integrantes.sql`** agrupa as rotinas por responsabilidade:
+
+```
+PKG_KURA_LOG ◄──────── (log de erro, transação autônoma) ◄── usado por todos os outros
+PKG_TRIAGEM      fn_calcular_score_urgencia
+PKG_COBRANCA     fn_cobranca_json · prc_listar_cobrancas_json · prc_relatorio_cobrancas
+                 listar_json · relatorio_json · exportar_todas
+PKG_AUDITORIA    registrar_cobranca  ◄── TRG_AUDITORIA_COBRANCA (fora do package, fina)
+```
+
+### Os quatro packages e a trigger fina
+
+| Objeto | Interface pública | O que faz |
+|---|---|---|
+| `PKG_KURA_LOG` | `registrar_erro(p_origem, p_codigo, p_mensagem, p_parametros)` | Grava uma linha em `LOG_ERRO` e a confirma em **transação autônoma** (`PRAGMA AUTONOMOUS_TRANSACTION`). Não propaga erro do próprio `INSERT`; não faz `COMMIT` nem `ROLLBACK` na transação de quem chamou |
+| `PKG_TRIAGEM` | `fn_calcular_score_urgencia(p_texto)` → `'ALTA'`/`'MEDIA'`/`'BAIXA'` | O motor léxico de triagem da Sprint 3, portado. Em erro, grava no log e devolve `'BAIXA'` |
+| `PKG_COBRANCA` | `fn_cobranca_json` (8 escalares) · `prc_listar_cobrancas_json` e `prc_relatorio_cobrancas` (`DBMS_OUTPUT`, como na Sprint 3) · **`listar_json`** e **`relatorio_json`** (`p_saida OUT CLOB`, chamadas pela aplicação) · `exportar_todas` (`OUT CLOB`, só para o arquivo JSON) | JSON de cobrança e relatório totalizado, com soma manual |
+| `PKG_AUDITORIA` | `registrar_cobranca(p_operacao, 8 valores :OLD, 8 valores :NEW)` | Grava a trilha em `AUDITORIA_COBRANCA`, **na mesma transação** do `INSERT`/`UPDATE`/`DELETE` auditado |
+| `TRG_AUDITORIA_COBRANCA` | — (fora de package) | `AFTER INSERT OR UPDATE OR DELETE ON COBRANCA FOR EACH ROW`: só identifica a operação e faz **uma** chamada a `PKG_AUDITORIA.registrar_cobranca` |
+
+### Por que a trigger fica fora do package
+
+Um package agrupa "tipos, variáveis, constantes, subprogramas, cursores e exceções" ([Oracle 21c, PL/SQL Language Reference, "What is a Package?"](https://docs.oracle.com/en/database/oracle/oracle-database/21/lnpls/plsql-packages.html)); trigger **não é membro de package**, é uma unidade própria (`CREATE TRIGGER`). Ler a rubrica ao pé da letra ("gatilhos empacotados") é, portanto, impossível. A resposta é a que a própria Oracle recomenda: quando a lógica da trigger passa de umas 60 linhas, ela deve ficar em um subprograma armazenado e a trigger só o chama ([Oracle 21c, "PL/SQL Triggers"](https://docs.oracle.com/en/database/oracle/oracle-database/21/lnpls/plsql-triggers.html)). A trigger fina identifica a operação; toda a regra mora em `PKG_AUDITORIA`.
+
+### Mapa: objeto da Sprint 3 → rotina do package
+
+| Sprint 3 (standalone) | Sprint 4 |
+|---|---|
+| `FN_COBRANCA_JSON` | `PKG_COBRANCA.fn_cobranca_json` — mesmos campos, mesma ordem, mesmo escape |
+| `FN_CALCULAR_SCORE_URGENCIA` | `PKG_TRIAGEM.fn_calcular_score_urgencia` |
+| `PRC_LISTAR_COBRANCAS_JSON` | `PKG_COBRANCA.prc_listar_cobrancas_json` (+ a nova `listar_json`, que devolve CLOB em vez de imprimir) |
+| `PRC_RELATORIO_COBRANCAS` | `PKG_COBRANCA.prc_relatorio_cobrancas` (+ a nova `relatorio_json`) |
+| `TRG_AUDITORIA_COBRANCA` | **mesmo nome**, agora fina; a regra foi para `PKG_AUDITORIA.registrar_cobranca` |
+| 9 handlers que repetiam `ROLLBACK` → `INSERT INTO LOG_ERRO` → `COMMIT` | `PKG_KURA_LOG.registrar_erro` (uma rotina, transação autônoma) |
+
+A equivalência com a Sprint 3 foi conferida em execução: o relatório e a listagem saem **iguais byte a byte** aos da Sprint 3 (comparação por `diff` dos arquivos de `SPOOL`), e `fn_cobranca_json` e `fn_calcular_score_urgencia` foram comparadas caso a caso contra as funções da Sprint 3 recriadas com outro nome.
+
+### Decisões de projeto dos packages
+
+- **Sem estado e sem `SERIALLY_REUSABLE`.** A documentação da Oracle diz que acessar um package `SERIALLY_REUSABLE` a partir de trigger de banco gera erro; `PKG_AUDITORIA` e `PKG_COBRANCA` são chamados pela trigger.
+- **Só o `PKG_KURA_LOG` é autônomo.** O `PKG_AUDITORIA` fica na transação do chamador: se o lançamento da cobrança sofre `ROLLBACK`, a linha de auditoria some junto (autônoma, ela sobreviveria a um `ROLLBACK` e auditaria algo que não aconteceu).
+- **Log inválido não derruba o lançamento de cobrança.** `PKG_COBRANCA` e `PKG_TRIAGEM` chamam o log por SQL dinâmico (`log_seguro`), sem dependência de compilação: com a especificação do `PKG_KURA_LOG` propositalmente inválida, o `UPDATE` em `COBRANCA` continuou funcionando (`rows=1`).
+- **Ordem de instalação sem janela.** Packages e trigger entram por `CREATE OR REPLACE` (nunca `DROP`); o BLOCO 8 recompila e confere todos os dependentes (a trigger inclusive) **antes** de o BLOCO 9 remover as rotinas standalone da Sprint 3. Parar o script em qualquer ponto deixa a trigger apontando para código que existe.
+- **Nenhuma rotina de negócio faz `COMMIT` ou `ROLLBACK` na transação do chamador.** O único `ROLLBACK` do arquivo está dentro da transação autônoma do log, e encerra só ela.
+
+### Códigos de saída do instalador
+
+O `sqlplus` sai com `SQLCODE` módulo 256; o instalador usa códigos próprios que sobrevivem a isso. Quem automatiza deve decidir por **`EXIT = 0` e nenhum `ORA-` fora da demonstração e `RESUMO: n OK, 0 FALHOU`**.
+
+| `EXIT` | Origem | Significado |
+|:---:|---|---|
+| 164 | `ORA-20900` | Pré-requisito: faltam tabelas (nada foi criado) |
+| 165 | `ORA-20901` | Algum objeto ficou inválido ou com erro de compilação |
+| 166 | `ORA-20902` | Pacotes instalados e válidos, mas a demonstração embutida registrou `FALHOU` |
+| 167 | `ORA-20903` | O BLOCO 9 recusou remover uma standalone da Sprint 3 da qual algo ainda depende |
+
 ---
 
 ## Modelo de Tratamento de Erros
@@ -304,6 +426,126 @@ Padrão herdado da 2ª Sprint (`banco/kura_req1`): cada handler faz `ROLLBACK` �
 
 > `TRG_AUDITORIA_COBRANCA` **não** tem bloco `EXCEPTION` — de propósito (ver seção do gatilho).
 
+
+### Sprint 4 — transação autônoma e códigos próprios
+
+O padrão acima (`ROLLBACK` → `INSERT` → `COMMIT`) tinha dois problemas quando a rotina passa a ser chamada por uma aplicação: o `ROLLBACK` desfaz o trabalho pendente **de quem chamou**, e o `COMMIT` confirma o trabalho dele pela metade. Na Sprint 4 todo o log passa por **`PKG_KURA_LOG.registrar_erro`**, que usa `PRAGMA AUTONOMOUS_TRANSACTION`: o log tem transação própria e **sobrevive ao `ROLLBACK` do chamador**, sem tocar nele.
+
+Medido (Oracle XE 21c local, schema `KURA`): com uma linha pendente na transação do chamador, duas exceções tratadas (`-20001` em `listar_json` e `-20003` na triagem) gravaram 2 linhas em `LOG_ERRO`; o `LOCAL_TRANSACTION_ID` do chamador foi o mesmo antes e depois, e depois do `ROLLBACK` a linha pendente sumiu **e as 2 linhas de log ficaram**.
+
+**Códigos que a aplicação enxerga** (`RAISE_APPLICATION_ERROR`):
+
+| Código | Situação | Rotina |
+|:---:|---|---|
+| `-20001` | `p_id_clinica` nulo | `listar_json`, `relatorio_json` |
+| `-20002` | clínica inexistente ou inativa | `listar_json`, `relatorio_json` |
+| `-20003` | texto de triagem com mais de 4000 caracteres (tratado: devolve `'BAIXA'`; era `-20001` na Sprint 3) | `fn_calcular_score_urgencia` |
+
+**Regra assimétrica de exceção, de propósito:**
+
+| Rotina | Comportamento em erro |
+|---|---|
+| `listar_json`, `relatorio_json` (chamadas pela aplicação) | grava em `LOG_ERRO` e **relança**, para o backend saber que falhou |
+| `prc_listar_cobrancas_json`, `prc_relatorio_cobrancas`, `fn_calcular_score_urgencia` | grava em `LOG_ERRO`, informa e **não propaga** (comportamento da Sprint 3) |
+| `fn_cobranca_json` | **nunca propaga** (é chamada pela trigger), devolve um JSON de fallback; também grava em `LOG_ERRO`, o que a Sprint 3 não podia fazer (`COMMIT` em trigger é `ORA-04092`; agora o log é autônomo) |
+
+**LGPD:** o log guarda só identificadores e tamanhos (`p_id_clinica=100`, `len=4001`), nunca o texto da mensagem de triagem. Medido: o texto de teste do cenário de triagem não aparece em `LOG_ERRO` nem no log da API (controle positivo: `len=4001` aparece 7 vezes).
+
+---
+
+## Integração com o Backend (.NET)
+
+A rubrica pede que as procedures sejam "chamadas via aplicação". A API da clínica (`backend-clinica-dotnet`, Clean Architecture) chama o `PKG_COBRANCA` por **ODP.NET** (`OracleCommand` do tipo `StoredProcedure`, `p_id_clinica` como `Int64` de entrada e `p_saida` como `Clob` de saída; o CLOB é lido com a conexão aberta e liberado com `Dispose`; se há transação corrente, a chamada a usa).
+
+### As duas rotas
+
+| Rota (`GET`) | Procedure | Perfil |
+|---|---|---|
+| `/api/v1/financeiro/cobrancas/exportacao-json` | `PKG_COBRANCA.LISTAR_JSON` | só `GESTOR` |
+| `/api/v1/financeiro/cobrancas/relatorio-oracle` | `PKG_COBRANCA.RELATORIO_JSON` | só `GESTOR` |
+
+`VETERINARIO` recebe `403` e requisição sem token recebe `401`.
+
+A rotina de **inserção** não precisou de rota nova: o lançamento de cobrança já existia (`POST /api/v1/eventos-clinicos/{id}/cobrancas`, EF Core) e a **trigger fina** audita cada `INSERT` na mesma transação.
+
+### Escopo de clínica: sempre o do JWT
+
+`p_id_clinica` vem **exclusivamente** da clínica do usuário autenticado (`IClinicaContext`, lida do JWT), nunca de rota nem de query string (`?idClinica=` é ignorado). Na Sprint 3, `NULL` significava "todas as clínicas"; passá-lo pela aplicação seria vazamento entre clínicas. Por isso:
+
+- a interface do gateway só tem métodos que recebem `long idClinica`, e **`PKG_COBRANCA.exportar_todas` não tem método nenhum**: um teste procura o nome da rotina no código-fonte e nos assemblies e falha se achar (com controle positivo do detector);
+- a suíte exercita duas clínicas, e a troca do `idClinica` por um valor fixo é pega por falha nominal.
+
+### Mapeamento de erro para HTTP
+
+O corpo da resposta **nunca** carrega `ORA-`, nome de package ou de schema; o detalhe técnico fica só no log do servidor.
+
+| Situação | Origem | HTTP |
+|---|---|:---:|
+| Sucesso | — | `200` (`application/json`) |
+| Clínica inexistente ou inativa | `ORA-20002` | `404` |
+| `p_id_clinica` nulo (bug do servidor: a clínica vem do JWT) | `ORA-20001` | `500`, título fixo |
+| Package ausente ou inválido | `ORA-04063`, `04067`, `04068`, `06508`, `06550` | `503`, `codigo: ROTINA_ORACLE_INDISPONIVEL`, título fixo |
+| Oracle fora do ar (falha ao abrir a conexão) | `ORA-12545` etc. | `500`, título fixo (o processo não cai) |
+| `POST` de cobrança com trigger ou package inválidos | `ORA-04063`, `04067`, `04068`, `04098`, `06508`, `06550` no commit | `503` |
+
+### O que foi provado contra Oracle real (local)
+
+API construída de `backend-clinica-dotnet@7167076`, Oracle XE 21c, schema `KURA` migrado pelo Flyway, duas clínicas:
+
+- as duas rotas respondem `200`; a clínica A vê só as suas cobranças e a B só as dela (conjuntos de ids disjuntos, conferidos id a id contra `SELECT`); os subtotais do `relatorio-oracle` batem número a número com `PKG_COBRANCA.prc_relatorio_cobrancas`;
+- `POST` de cobrança ⇒ `201` + linha em `COBRANCA` + linha `INSERT` em `AUDITORIA_COBRANCA` com o JSON do `:NEW`;
+- package ausente ⇒ `503` sem `ORA-` no corpo (o `ORA-06550` está no log do servidor); corpo do `PKG_AUDITORIA` inválido ⇒ `POST` `503` e nada gravado;
+- clínica sem cobrança ⇒ `[]` / `"grupos":[]`; clínica inativa ⇒ `404`; JSON com acento e aspas íntegro; CLOB de 419.520 caracteres íntegro;
+- sem vazamento de LOB temporário (`V$TEMPORARY_LOBS` 1 → 1 em 30 chamadas, com controle positivo do instrumento);
+- Oracle parado ⇒ `500` de título fixo, processo de pé e recuperação sem reiniciar.
+
+### Limites declarados
+
+- A suíte automatizada da .NET (**1435 testes, 0 falhas** em `7167076`) usa banco **InMemory e não executa PL/SQL**: ela prova o escopo, o mapeamento e o gateway com dublê; **a chamada real ao Oracle só foi provada na execução local acima**.
+- Depois de o `Remover.sql` rodar, o `POST` de cobrança continua devolvendo `201`, mas **sem auditoria**, e nada avisa. É o custo declarado da saída de emergência.
+- Com o Oracle fora do ar, o `POST` de cobrança (EF Core) ainda devolve `500` com o texto do erro de conexão no `title`: é o ramo genérico do middleware de exceções, anterior a esta entrega e fora das duas rotas novas.
+- A função de triagem (`PKG_TRIAGEM`) **não** é exposta pela API nesta entrega.
+
+
+## Exportação JSON
+
+`scripts/2TDSPF_2026_Exportar_Json.sql` chama **`PKG_COBRANCA.exportar_todas`** e grava o CLOB em `data/2TDSPF_2026_Dataset_Cobrancas.json`. O JSON é gerado **pelo package** (nunca montado nem editado à mão): é a mesma serialização que a trigger e a API usam, e é o arquivo que o `mongoimport --jsonArray` lê.
+
+- **Conteúdo:** array JSON, um elemento por linha, **só cobranças ativas**, UTF-8 sem BOM. Campos, nesta ordem: `idCobranca`, `idEvento`, `idClinica`, `idServico`, `servico` (o **nome**, texto, ou `null`), `valor`, `formaPagamento`, `dataCobranca`, `ativa`, `nmClinica`.
+- **Arquivo versionado:** 18 elementos, a carga **fictícia** da Sprint 3. As datas da carga são relativas a `SYSDATE`: o arquivo é o retrato de uma execução.
+- **Sem senha no repositório:** o script não tem `CONNECT`; usa a conexão que você abriu. O cliente precisa de `NLS_LANG` com charset UTF-8 (por exemplo `.AL32UTF8`), senão o acento sai errado.
+- **Por que `exportar_todas` não é exposta pela API:** ela devolve as cobranças de **todas** as clínicas. É de uso exclusivo desta exportação.
+
+```
+# a partir da RAIZ do repositório (o SPOOL é relativo; a pasta data/ precisa existir)
+sqlplus USUARIO@//host:porta/servico @scripts/2TDSPF_2026_Exportar_Json.sql
+```
+
+Medido: o JSON regerado a partir da carga da Sprint 3 é **idêntico** ao arquivo versionado (`cmp`), é JSON válido (`JSON.parse`) com 18 elementos, todos ativos, e o `COUNT(*)` das cobranças ativas no Oracle também é 18. Executado contra o schema `KURA` com dados de duas clínicas, o mesmo script gerou um array válido com a contagem igual ao `COUNT(*)` das ativas. Se o package não estiver instalado, o script falha (`ORA-06550`, `EXIT=150`) **sem criar o arquivo**.
+
+> ⚠️ Rodar o script na raiz do repositório **sobrescreve** `data/2TDSPF_2026_Dataset_Cobrancas.json`. Para experimentar sem alterar o arquivo versionado, rode-o a partir de uma cópia.
+
+
+## MongoDB
+
+O dataset exportado é importado em um MongoDB 7, com estrutura de documentos, validação, índice justificado e o relatório da Sprint 3 refeito como agregação. Passo a passo, tabela de seções do script e decisões de modelagem: **[`mongo/README.md`](mongo/README.md)**. O código-fonte é `mongo/2TDSPF_2026_MongoDB_Integrantes.js` (sem credencial; o MongoDB local roda sem autenticação, só para a disciplina).
+
+| Decisão | Por quê |
+|---|---|
+| **Staging** `cobrancas_raw` (importação crua) → **`cobrancas_export`** (coleção final) por pipeline | O JSON do Oracle traz a data como texto e o valor como número em ponto flutuante; um `$jsonSchema` com `date` e `decimal` recusaria a importação direta. A conversão (`$dateFromString` em UTC, `$toDecimal` sobre `$toString`, sem cauda binária) é feita no `$merge` |
+| **`$jsonSchema` estrito** (`validationLevel: strict`, `validationAction: error`, `additionalProperties: false`) | Documento fora do formato é recusado (código 121), não aceito com aviso |
+| **Embutir** `clinica.nome` e `servico {id, nome}`; **referenciar** a clínica por `idClinica` | O relatório lê tudo em um documento. `servico.nome` é o nome **na data da exportação** (o Oracle não guarda histórico). Cobrança cresce sem limite e o cadastro da clínica muda sozinho |
+| Índices `ux_cobranca_id` (único) e `ix_clinica_data` (`idClinica`, `dtCobranca` desc) | O único é exigido pelo `$merge`; o composto atende "cobranças de uma clínica num período" (`IXSCAN` no `explain`) |
+| Espelhamento: depois do `$merge`, apaga do export o que sumiu do staging | O `$merge` só faz upsert; sem isso uma cobrança desativada no Oracle ficaria órfã e o Total Geral ficaria errado |
+| Conferências no fim do script (`CONFERE`/`DIVERGE`, `RESUMO`, `EXIT` diferente de zero se divergir) | A demonstração confere, não só imprime |
+
+**Medido (`mongo:7` local, 7.0.45):**
+
+- com o dataset versionado (18 cobranças): `countDocuments` do staging e do export = **18** = `COUNT(*)` das ativas; a agregação reproduz o `PRC_RELATORIO_COBRANCAS` da Sprint 3 — **Sub Total 1565.10 (clínica 1), 1462.05 (clínica 2), Total Geral 3027.15**, em `Decimal128`; `RESUMO: 34 CONFERE, 0 DIVERGE`, `EXIT=0`;
+- com o JSON exportado do schema `KURA` (duas clínicas, 5 cobranças): `countDocuments` = 5 = `COUNT(*)`; os subtotais por clínica (250.15 e 390.50) são iguais aos do `relatorio-oracle` da API; `RESUMO: 20 CONFERE, 0 DIVERGE` (o gabarito da Sprint 3 só vale para o dataset da Sprint 3; com outro, o script imprime `PULADO`);
+- o `$jsonSchema` recusa documento inválido (por exemplo `valor: "abc"`) com o código 121;
+- 2 rodadas seguidas dão o mesmo resultado (idempotente); o `--drop` do `mongoimport` é obrigatório: sem ele cada importação duplica o staging.
+
 ---
 
 ## Pré-requisitos
@@ -313,6 +555,9 @@ Padrão herdado da 2ª Sprint (`banco/kura_req1`): cada handler faz `ROLLBACK` �
 | Oracle Database | 12c (entregue no **19c** da FIAP) | `DEFAULT SEQ.NEXTVAL` e `GENERATED BY DEFAULT AS IDENTITY` exigem 12c+ |
 | Oracle SQL Developer | 21.x+ (ou SQLcl) | Recomendado — evita mojibake por `NLS_LANG` mal configurado; necessário para ver o `DBMS_OUTPUT` |
 | Usuário Oracle | Qualquer schema de aluno | Necessita `CREATE TABLE`, `CREATE SEQUENCE`, `CREATE PROCEDURE`, `CREATE TRIGGER`, `CREATE VIEW` |
+| **Sprint 4** — `sqlplus` | cliente Oracle de linha de comando (ou SQL Developer/SQLcl) | os scripts da Sprint 4 foram feitos para rodar por `sqlplus`; o instalador devolve códigos de saída próprios |
+| **Sprint 4** — Oracle com o schema do produto | Oracle XE 21c (a prova foi feita em `gvenzl/oracle-xe:21-slim`, Docker) | o instalador de packages exige as 5 tabelas `COBRANCA`, `SERVICO_PRECO`, `LOG_ERRO`, `CLINICA`, `TRIAGEM_LUNA` (BLOCO 0; sem elas sai com `EXIT=164`), criadas pelo Flyway **ou** pelo arquivo da Sprint 3. Privilégios para criar package e trigger |
+| **Sprint 4** — MongoDB | `mongo:7` (traz `mongosh` e `mongoimport`) | ver [`mongo/README.md`](mongo/README.md) |
 
 ---
 
@@ -333,6 +578,22 @@ Padrão herdado da 2ª Sprint (`banco/kura_req1`): cada handler faz `ROLLBACK` �
 - Blocos 8–10 compilam os 5 objetos sem erro.
 - O bloco 11 (demonstração) exercita os 5 objetos no caminho feliz **e dispara cada exceção tratada** — as exceções são **tratadas** (não vazam), então a saída do bloco 11 pode conter a string `ORA-01403` etc. dentro do `SQLERRM` que os handlers registram: isso é **evidência de que o tratamento de erro funciona**.
 
+
+### Sprint 4: ordem de execução
+
+A ordem é **Sprint 3 → Packages → exportação → MongoDB**. O passo 1 só é necessário se o schema ainda não tiver as tabelas (no schema da aplicação, quem as cria é o Flyway).
+
+```
+1. (schema de aluno, sem as tabelas)  rodar src/2TDSPF_2026_CodigoSql_Integrantes.sql, como acima
+   (schema KURA da aplicação)         NÃO rodar: ver "Re-execução e Limpeza"
+2. Packages e trigger fina             sqlplus USUARIO@//host:porta/servico @src/2TDSPF_2026_Packages_Integrantes.sql
+3. Exportar o dataset em JSON          (a partir da raiz) sqlplus USUARIO@//host:porta/servico @scripts/2TDSPF_2026_Exportar_Json.sql
+4. MongoDB                             mongoimport … ; mongosh --file mongo/2TDSPF_2026_MongoDB_Integrantes.js   (passo a passo em mongo/README.md)
+```
+
+**Critério de sucesso do passo 2** (os três juntos): `EXIT = 0`, **nenhum `ORA-` fora do trecho de demonstração** e as linhas `RESUMO: n OK, 0 FALHOU`. O `n` depende do conteúdo do schema; exemplos medidos: 60 e 72 no schema da carga da Sprint 3; 60 e 12 num schema recém-migrado, sem clínica nem cobrança (a demonstração pula o que depende de dados e imprime `PULADO`); 60 e 68 com duas clínicas e cinco cobranças. Dentro da demonstração aparecem alguns `ORA-` (por exemplo `ORA-20001`): são exceções **provocadas e tratadas** de propósito, registradas em `LOG_ERRO`, e não erros. O instalador pode ser executado várias vezes seguidas sem apagar dado.
+
+
 ---
 
 ## Re-execução e Limpeza
@@ -343,6 +604,16 @@ O script é **idempotente**. O **BLOCO 1** derruba, **por nome**, apenas os obje
 - `DROP TABLE ... CASCADE CONSTRAINTS PURGE` dispensa a ordem inversa de FK.
 - Rodar 2× seguidas dá o mesmo resultado.
 - Objetos PL/SQL da Sprint 1/2 do próprio KURA (`PRC_INSERT_*`) podem ficar `INVALID` após o BLOCO 1 — esperado, recompilam sozinhos.
+
+
+### Sprint 4: reinstalar, remover e recomeçar
+
+> 🔴 **Nunca execute `src/2TDSPF_2026_CodigoSql_Integrantes.sql` (a Sprint 3) no schema `KURA` da aplicação.** O BLOCO 1 dele faz `DROP` das 30 tabelas por nome — num schema de aluno isso é a limpeza idempotente; no banco do produto, é apagar o banco. Para o schema `KURA`, o arquivo certo é o de packages, que é não destrutivo.
+
+- **Reinstalar:** `2TDSPF_2026_Packages_Integrantes.sql` é idempotente (`CREATE OR REPLACE`; nenhum `DROP` de package ou de trigger; nenhum dado apagado). Uma execução consome valores de sequence e grava algumas linhas sintéticas em `LOG_ERRO` (log autônomo, sem dado pessoal).
+- **Remover (saída de emergência):** `src/2TDSPF_2026_Packages_Remover.sql` remove **só código**, nesta ordem: a trigger **primeiro**, depois `PKG_AUDITORIA`, `PKG_COBRANCA`, `PKG_TRIAGEM`, `PKG_KURA_LOG`. Tabelas, sequences e a trilha de auditoria já gravada ficam exatamente como estão. É idempotente. A trigger sai primeiro para que o lançamento de cobrança da aplicação volte a funcionar mesmo se um package estiver quebrado (trigger apontando para package ausente ou inválido faz todo `INSERT` em `COBRANCA` falhar com `ORA-04098`/`ORA-04063`).
+- ⚠️ **O custo de remover:** enquanto a trigger não existe, **novas cobranças são lançadas sem auditoria** e nada avisa. Reinstale o arquivo de packages assim que possível. Com os packages removidos, as duas rotas da API respondem `503`.
+- **Mongo:** `mongoimport --drop` refaz o staging e o script refaz o resto (`mongo/README.md`).
 
 ---
 
@@ -462,7 +733,7 @@ DB_USER=<schema-owner>
 DB_PASSWORD=<password>
 ```
 
-A infraestrutura Oracle é provida pela FIAP (parceria FIAP × Oracle — instância sempre ativa). Não é necessário container Docker local.
+A infraestrutura Oracle da entrega da Sprint 3 é provida pela FIAP (parceria FIAP × Oracle — instância sempre ativa); para ela não é necessário container Docker. A prova da Sprint 4 foi feita em um Oracle XE 21c em Docker local (ver [Arquitetura de execução](#arquitetura-de-execução)).
 
 ---
 
@@ -475,6 +746,19 @@ A infraestrutura Oracle é provida pela FIAP (parceria FIAP × Oracle — instâ
 | `docs/kura_modelo_relacional.pdf` | Modelo relacional do banco |
 | `docs/banco_kura_doc.md` | Fonte Markdown da documentação técnica |
 | `docs/prints/` | 14 capturas de tela da saída do BLOCO 11 |
+| `src/2TDSPF_2026_Packages_Integrantes.sql` | Sprint 4 — instalador dos 4 packages e da trigger fina (não destrutivo, com demonstração conferida) |
+| `src/2TDSPF_2026_Packages_Remover.sql` | Sprint 4 — saída de emergência: remove só código (trigger primeiro) |
+| `scripts/2TDSPF_2026_Exportar_Json.sql` | Sprint 4 — gera o JSON por `PKG_COBRANCA.exportar_todas` |
+| `data/2TDSPF_2026_Dataset_Cobrancas.json` | Sprint 4 — dataset exportado (18 cobranças ativas, carga fictícia da Sprint 3) |
+| `mongo/2TDSPF_2026_MongoDB_Integrantes.js` e `mongo/README.md` | Sprint 4 — estrutura MongoDB, importação, agregação e passo a passo |
+
+---
+
+## Vídeo da Sprint 4
+
+Vídeo demonstrativo narrado (rubrica da Sprint 4, item 5): execução dos procedimentos pelo backend, inserção no banco relacional, exportação do dataset para JSON e importação no MongoDB.
+
+> **Link: PENDENTE.** O vídeo ainda não foi gravado nem publicado. Substituir esta linha pelo link quando existir.
 
 ---
 
