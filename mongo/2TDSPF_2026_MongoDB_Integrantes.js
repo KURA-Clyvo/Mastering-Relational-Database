@@ -118,12 +118,15 @@ print("[espelho] orfaos removidos do export: " + orfaos.deletedCount);
 
 // 6. Consultas de demonstracao ---------------------------------------------------
 // Periodo derivado dos DADOS (a carga da S3 gera datas relativas a SYSTIMESTAMP):
-// os 4 dias terminando na cobranca mais recente da clinica 1.
-const maisRecente = db.cobrancas_export.find({ idClinica: 1 }).sort({ dtCobranca: -1 }).limit(1).toArray()[0];
+// os 4 dias terminando na cobranca mais recente da clinica escolhida abaixo.
+// A clinica e derivada dos dados: a que tem mais cobrancas no export (empate: menor idClinica).
+const topClinica = db.cobrancas_export.aggregate([{ $group: { _id: "$idClinica", n: { $sum: 1 } } }, { $sort: { n: -1, _id: 1 } }, { $limit: 1 }]).toArray()[0];
+const clinicaA = topClinica ? topClinica._id : 1;
+const maisRecente = db.cobrancas_export.find({ idClinica: clinicaA }).sort({ dtCobranca: -1 }).limit(1).toArray()[0];
 const fimA = maisRecente ? maisRecente.dtCobranca : new Date(0);
 const iniA = new Date(fimA.getTime() - 4 * 24 * 3600 * 1000);
-print("\n=== (a) cobrancas da clinica 1 entre " + iniA.toISOString() + " e " + fimA.toISOString() + " (inclusive) ===");
-const filtroA = { idClinica: 1, dtCobranca: { $gte: iniA, $lte: fimA } };
+print("\n=== (a) cobrancas da clinica " + clinicaA + " entre " + iniA.toISOString() + " e " + fimA.toISOString() + " (inclusive) ===");
+const filtroA = { idClinica: clinicaA, dtCobranca: { $gte: iniA, $lte: fimA } };
 const docsA = db.cobrancas_export.find(filtroA, { _id: 0, idCobranca: 1, valor: 1, formaPagamento: 1, dtCobranca: 1, "servico.nome": 1 }).sort({ dtCobranca: -1 }).toArray();
 docsA.forEach(d => printjson(d));
 const plano = db.cobrancas_export.find(filtroA).sort({ dtCobranca: -1 }).explain("executionStats");
@@ -234,7 +237,9 @@ const GABARITO = { "1|BOLETO": "386.75", "1|CARTAO_CREDITO": "404.30", "1|CARTAO
   "2|CARTAO_CREDITO": "438.15", "2|DINHEIRO": "280.20", "2|PIX": "420.80", "2|TRANSFERENCIA": "322.90" };
 const GAB_SUB = { 1: "1565.10", 2: "1462.05" };
 const GAB_TOTAL = "3027.15";
-if (ids(rawDocs) !== "1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18") {
+// O gabarito e das clinicas 1 e 2 da S3: o mesmo idCobranca 1..18 com outras clinicas tambem e "dataset diferente".
+const clinicasRaw = [...new Set(rawDocs.map(d => d.idClinica))].sort((x, y) => x - y).join(",");
+if (ids(rawDocs) !== "1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18" || clinicasRaw !== "1,2") {
   print("PULADO: gabarito (dataset diferente)");
 } else {
   const txt = d => { let t = d.toString(); if (t.indexOf(".") < 0) t += ".00"; else t = t.padEnd(t.indexOf(".") + 3, "0"); return t; };

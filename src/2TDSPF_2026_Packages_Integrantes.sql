@@ -2074,7 +2074,13 @@ BEGIN
 
         -- rotinas da Sprint 3 (saida por DBMS_OUTPUT): nao propagam e registram o erro
         DBMS_OUTPUT.PUT_LINE('---- saida de prc_relatorio_cobrancas(' || v_clin || ') ----');
-        PKG_COBRANCA.prc_relatorio_cobrancas(v_clin);
+        -- Sem cobranca ativa na clinica a procedure so loga NO_DATA_FOUND (esperado, mas muda a conta do E.3j):
+        -- por isso so e chamada quando ha dado; senao o caso vira PULADO e a conta de LOG_ERRO continua exata.
+        IF n_ativas(v_clin) > 0 THEN
+            PKG_COBRANCA.prc_relatorio_cobrancas(v_clin);
+        ELSE
+            pula('prc_relatorio_cobrancas(' || v_clin || ') com dados', 'schema sem cobranca ativa');
+        END IF;
         v_antes := n_log;
         PKG_COBRANCA.prc_listar_cobrancas_json(-999999);
         PKG_COBRANCA.prc_relatorio_cobrancas(-999999);
