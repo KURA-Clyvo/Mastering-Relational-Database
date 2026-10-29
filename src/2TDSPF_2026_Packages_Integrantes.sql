@@ -12,39 +12,56 @@
 -- #    - Nikolas Henrique de Souza Lemes Brisola ... RM564371
 -- #
 -- #############################################################################
--- #  ESCOPO DESTE ARQUIVO (task S4-DB-02)
+-- #  ESCOPO DESTE ARQUIVO (tasks S4-DB-02 e S4-DB-03)
 -- #
--- #  Evolui a Sprint 3: troca a funcao standalone FN_CALCULAR_SCORE_URGENCIA por
--- #  dois packages e cria a ESTRUTURA da trilha de auditoria (tabela, sequence e
--- #  indices; a trigger que a alimenta NAO e criada aqui). NAO recria tabelas de
--- #  negocio.
+-- #  Evolui a Sprint 3: troca as funcoes/procedimentos standalone por quatro
+-- #  packages, troca a trigger de auditoria por uma trigger FINA que delega a um
+-- #  package, e cria a ESTRUTURA da trilha de auditoria (tabela, sequence e
+-- #  indices). NAO recria tabelas de negocio.
 -- #
 -- #    BLOCO 0  - Cabecalho, sessao e PRE-REQUISITO (verificado: o script PARA)
--- #    BLOCO 1  - Limpeza SOMENTE da funcao standalone antiga (idempotente)
+-- #    BLOCO 1  - Limpeza da FN_CALCULAR_SCORE_URGENCIA standalone (idempotente)
 -- #    BLOCO 2  - AUDITORIA_COBRANCA + sequence + indices (se nao existirem)
 -- #    BLOCO 3  - PKG_KURA_LOG   (log em transacao autonoma)
 -- #    BLOCO 4  - PKG_TRIAGEM    (score de urgencia, porte 1:1 da Sprint 3)
--- #    BLOCO 5  - Verificacao: nada invalido e nenhum erro de compilacao (PARA)
--- #    DEMO     - confere (OK/FALHOU) cada caminho e cada excecao
--- #    BLOCO 5  - repetido no fim do arquivo
+-- #    BLOCO 5  - PKG_COBRANCA   (JSON e relatorio de cobranca)
+-- #    BLOCO 6  - PKG_AUDITORIA  (grava a trilha; mesma transacao do DML)
+-- #    BLOCO 7  - TRG_AUDITORIA_COBRANCA fina (CREATE OR REPLACE, mesmo nome)
+-- #    BLOCO 8  - Verificacao: recompila e confere TODOS os dependentes (PARA)
+-- #    BLOCO 9  - Remove as standalone da Sprint 3 (so depois do BLOCO 8)
+-- #    DEMO 02  - confere (OK/FALHOU) log e triagem
+-- #    DEMO 03  - confere (OK/FALHOU) cobranca e auditoria; desfaz todo o DML
+-- #    BLOCO 8  - repetido no fim do arquivo
+-- #
+-- #  ORDEM SEM JANELA (de proposito): os packages e a trigger entram por
+-- #  CREATE OR REPLACE (nunca por DROP), a verificacao do BLOCO 8 vem ANTES de
+-- #  qualquer remocao, e so entao as standalone da Sprint 3 saem. Se o script
+-- #  parar em qualquer ponto antes do BLOCO 9, a trigger continua apontando para
+-- #  codigo que existe. NAO ha DROP de package nem de trigger neste arquivo.
 -- #
 -- #  PRE-REQUISITO: o schema ja deve ter as tabelas da Sprint 3 (script
 -- #  2TDSPF_2026_CodigoSql_Integrantes.sql) ou o equivalente via Flyway. O
 -- #  BLOCO 0 confere por nome e aborta se faltar alguma das 5 tabelas usadas.
 -- #
 -- #  *** NAO destrutivo ***: este arquivo nao apaga dado, tabela nem sequence.
--- #  Os unicos DROP sao o da funcao standalone antiga (BLOCO 1). Ele pode ser
--- #  executado varias vezes seguidas sobre o mesmo schema.
+-- #  Os unicos DROP sao os das standalone da Sprint 3 (BLOCOS 1 e 9). Ele pode
+-- #  ser executado varias vezes seguidas sobre o mesmo schema. A demonstracao
+-- #  desfaz (ROLLBACK) todo o DML que faz em COBRANCA e SERVICO_PRECO; as unicas
+-- #  linhas que ela deixa sao as de LOG_ERRO (log autonomo, sinteticas, sem dado
+-- #  pessoal) - e as sequences consomem alguns valores (ids com "buracos").
 -- #
--- #  *** CODIGO DE SAIDA ***: qualquer erro, objeto invalido, erro de compilacao
--- #  ou linha FALHOU da demonstracao encerra o script com codigo diferente de 0.
+-- #  *** CODIGO DE SAIDA ***: o sqlplus sai com SQLCODE modulo 256 (medido).
+-- #  Codigos proprios deste arquivo: ORA-20900 -> 164 (pre-requisito),
+-- #  ORA-20901 -> 165 (invalido/erro de compilacao), ORA-20902 -> 166 (demo com
+-- #  FALHOU). Todo erro cujo codigo e MULTIPLO DE 256 sai com 0 (ex.: ORA-20224,
+-- #  e tambem ORA-01536, quota de espaco): por isso este arquivo nao usa codigos
+-- #  assim (-20224, -20480, -20736, -20992 evitados), e quem automatiza deve
+-- #  decidir por EXIT = 0 E nenhum "ORA-" fora da demo E "RESUMO: n OK, 0 FALHOU".
 -- #
--- #  *** OBJETOS DA SPRINT 3 QUE ESTE ARQUIVO NAO TOCA (de proposito) ***:
--- #  FN_COBRANCA_JSON, PRC_LISTAR_COBRANCAS_JSON, PRC_RELATORIO_COBRANCAS e a
--- #  TRG_AUDITORIA_COBRANCA. A trigger CHAMA a FN_COBRANCA_JSON: derrubar a
--- #  funcao deixaria a trigger INVALID e todo INSERT em COBRANCA falharia com
--- #  ORA-04098 (no banco do aplicativo isso derrubaria o lancamento de
--- #  cobranca). Eles so saem na task S4-DB-03, quando houver substitutos.
+-- #  *** ESTE ARQUIVO REMOVE (BLOCO 9) AS standalone DA SPRINT 3 ***:
+-- #  FN_COBRANCA_JSON, PRC_LISTAR_COBRANCAS_JSON e PRC_RELATORIO_COBRANCAS (as
+-- #  versoes novas moram no PKG_COBRANCA). A trigger da Sprint 3 chamava a
+-- #  FN_COBRANCA_JSON; ela e substituida (BLOCO 7) ANTES da remocao.
 -- #
 -- #  NENHUMA credencial, host, senha ou connection string neste arquivo.
 -- #############################################################################
@@ -60,7 +77,7 @@ SET TAB OFF
 -- Qualquer erro SQL/PL-SQL ENCERRA o script (sqlplus sai com o codigo Oracle) - do
 -- inicio ao fim, demonstracao inclusa. ATENCAO: erro de COMPILACAO de um
 -- CREATE PACKAGE e so um "Warning" para o sqlplus e NAO dispara esta clausula;
--- quem o pega e o BLOCO 5 (user_errors / user_objects).
+-- quem o pega e o BLOCO 8 (user_errors / user_objects).
 WHENEVER SQLERROR EXIT SQL.SQLCODE
 
 PROMPT
@@ -82,24 +99,24 @@ END;
 
 
 -- #############################################################################
--- #  BLOCO 1 - LIMPEZA SOMENTE DA FUNCAO STANDALONE ANTIGA
+-- #  BLOCO 1 - LIMPEZA DA FUNCAO STANDALONE DE TRIAGEM
 -- #
--- #  Derruba apenas a FN_CALCULAR_SCORE_URGENCIA standalone da Sprint 3 (agora
--- #  substituida por PKG_TRIAGEM.fn_calcular_score_urgencia). O DROP ignora
--- #  ORA-04043 (objeto inexistente); qualquer outro erro e propagado e encerra
--- #  o script.
+-- #  Derruba a FN_CALCULAR_SCORE_URGENCIA standalone da Sprint 3 (agora
+-- #  substituida por PKG_TRIAGEM.fn_calcular_score_urgencia); nada do arquivo
+-- #  depende dela (a trigger chama a funcao de COBRANCA, nao a de triagem). O
+-- #  DROP ignora ORA-04043 (objeto inexistente); qualquer outro erro e propagado
+-- #  e encerra o script.
 -- #
--- #  PKG_KURA_LOG e PKG_TRIAGEM NAO sao derrubados aqui, de proposito: eles sao
--- #  instalados so por CREATE OR REPLACE (BLOCOS 3 e 4), que e idempotente e
--- #  PRESERVA os objetos dependentes VALID. Com DROP PACKAGE todo dependente
--- #  (medido) fica INVALID; e quando a task S4-DB-03 acrescentar a trigger de
--- #  COBRANCA e o PKG_COBRANCA, que chamam PKG_KURA_LOG, um script interrompido
--- #  depois do DROP deixaria todo INSERT em COBRANCA falhando com ORA-04098
--- #  (no banco do aplicativo: o lancamento de cobranca cairia).
+-- #  Os packages e a trigger NAO sao derrubados em bloco nenhum, de proposito:
+-- #  entram so por CREATE OR REPLACE (BLOCOS 3 a 7), que e idempotente e PRESERVA
+-- #  os objetos dependentes - desde que a versao nova COMPILE (medido na re-G2:
+-- #  uma spec quebrada invalida o dependente na hora, e o BLOCO 8 acusa). Com
+-- #  DROP PACKAGE todo dependente (medido) fica INVALID; um script interrompido
+-- #  depois do DROP deixaria todo INSERT em COBRANCA falhando com ORA-04098 (no
+-- #  banco do aplicativo: o lancamento de cobranca cairia).
 -- #
--- #  NAO derruba FN_COBRANCA_JSON, PRC_* nem TRG_AUDITORIA_COBRANCA (ver o
--- #  cabecalho: a trigger depende da FN_COBRANCA_JSON). Nenhuma tabela e
--- #  nenhuma sequence e apagada neste arquivo.
+-- #  As standalone de COBRANCA (BLOCO 9) so saem depois da verificacao do
+-- #  BLOCO 8. Nenhuma tabela e nenhuma sequence e apagada neste arquivo.
 -- #############################################################################
 PROMPT
 PROMPT === BLOCO 1: limpeza da funcao standalone antiga ===
@@ -164,7 +181,7 @@ END;
 /
 
 -- COMMENT ON e idempotente (sobrescreve o texto), nao gera erro se repetido.
-COMMENT ON TABLE  AUDITORIA_COBRANCA                IS 'Trilha de auditoria DML de COBRANCA (Sprint 3 - FIAP). Alimentada por trigger de COBRANCA (nao criada pelo script de packages). Objeto academico - nao vai para o Flyway.';
+COMMENT ON TABLE  AUDITORIA_COBRANCA                IS 'Trilha de auditoria DML de COBRANCA (Sprint 3 - FIAP). Alimentada pela trigger TRG_AUDITORIA_COBRANCA (BLOCO 7), via PKG_AUDITORIA. Objeto academico - nao vai para o Flyway.';
 COMMENT ON COLUMN AUDITORIA_COBRANCA.NM_USUARIO     IS 'Usuario Oracle que executou a operacao (funcao USER).';
 COMMENT ON COLUMN AUDITORIA_COBRANCA.DS_OPERACAO    IS 'Tipo do DML capturado: INSERT, UPDATE ou DELETE.';
 COMMENT ON COLUMN AUDITORIA_COBRANCA.DS_VALORES_OLD IS 'Snapshot :OLD serializado em JSON - nulo em INSERT.';
@@ -184,7 +201,10 @@ COMMENT ON COLUMN AUDITORIA_COBRANCA.DS_VALORES_NEW IS 'Snapshot :NEW serializad
 -- #  pendente e visivel so para ele.
 -- #
 -- #  Package SEM ESTADO (nenhuma variavel de package) e NAO SERIALLY_REUSABLE.
--- #  Nunca propaga erro: um log que falha nao pode derrubar o chamador.
+-- #  Nunca propaga erro DO PROPRIO INSERT: um log que falha nao pode derrubar o
+-- #  chamador. (Isto NAO cobre o package inutilizavel - spec/body invalido
+-- #  propaga ORA-04063/06508 na chamada; quem chama via log_seguro, privado de
+-- #  PKG_TRIAGEM e PKG_COBRANCA, engole tambem esse caso.)
 -- #############################################################################
 PROMPT
 PROMPT === BLOCO 3: PKG_KURA_LOG ===
@@ -197,7 +217,9 @@ CREATE OR REPLACE PACKAGE PKG_KURA_LOG AS
     --   p_parametros - resumo NAO sensivel dos parametros (ex.: 'len=4001');
     --                  NUNCA passe conteudo de mensagem de tutor/paciente (LGPD)
     -- DS_STACK_TRACE recebe DBMS_UTILITY.FORMAT_ERROR_BACKTRACE.
-    -- Nao propaga excecao; nao faz COMMIT/ROLLBACK na transacao de quem chama.
+    -- Nao propaga excecao do proprio INSERT; nao faz COMMIT/ROLLBACK na
+    -- transacao de quem chama. Valida para todos os chamadores: pode ser chamada
+    -- de dentro de uma TRIGGER (a transacao autonoma torna o COMMIT legal).
     PROCEDURE registrar_erro (
         p_origem     IN VARCHAR2,
         p_codigo     IN NUMBER,
@@ -371,15 +393,26 @@ CREATE OR REPLACE PACKAGE BODY PKG_TRIAGEM AS
     -- Nao ha transacao pendente do log a proteger aqui (a gravacao e autonoma),
     -- entao "THEN NULL" e seguro. Mesmo padrao para a fn_cobranca_json da S4-DB-03,
     -- que a trigger de COBRANCA chama.
-    PROCEDURE log_seguro (p_codigo IN NUMBER, p_mensagem IN VARCHAR2, p_parametros IN VARCHAR2) IS
+    -- Devolve TRUE se a chamada ao PKG_KURA_LOG RETORNOU (o registrar_erro engole
+    -- falha do proprio INSERT, entao TRUE nao garante a linha - o que ela garante
+    -- e que o package de log nao estava inutilizavel) e FALSE se a chamada
+    -- levantou excecao (spec/body invalido). Quem imprime "registrado" usa o
+    -- retorno (RE-M3 da re-G2: antes a mensagem era incondicional).
+    FUNCTION log_seguro (p_codigo IN NUMBER, p_mensagem IN VARCHAR2, p_parametros IN VARCHAR2) RETURN BOOLEAN IS
     BEGIN
         BEGIN
             PKG_KURA_LOG.registrar_erro(c_fn, p_codigo, p_mensagem, p_parametros);
+            RETURN TRUE;
         EXCEPTION
             WHEN OTHERS THEN
-                NULL;
+                RETURN FALSE;
         END;
     END log_seguro;
+
+    FUNCTION msg_reg (p_ok IN BOOLEAN) RETURN VARCHAR2 IS
+    BEGIN
+        RETURN CASE WHEN p_ok THEN 'registrado em LOG_ERRO' ELSE 'NAO foi possivel registrar em LOG_ERRO (PKG_KURA_LOG inutilizavel)' END;
+    END msg_reg;
 
     FUNCTION fn_calcular_score_urgencia (p_texto IN VARCHAR2) RETURN VARCHAR2 IS
         e_texto_excede_limite EXCEPTION;
@@ -390,6 +423,7 @@ CREATE OR REPLACE PACKAGE BODY PKG_TRIAGEM AS
         v_media  BOOLEAN := FALSE;
         v_nivel  VARCHAR2(10);
         v_msg    VARCHAR2(2000);
+        v_reg    BOOLEAN;
     BEGIN
         IF p_texto IS NULL OR TRIM(p_texto) IS NULL THEN
             RETURN 'BAIXA';
@@ -439,20 +473,20 @@ CREATE OR REPLACE PACKAGE BODY PKG_TRIAGEM AS
     EXCEPTION
         WHEN e_texto_excede_limite THEN
             v_msg := 'texto com ' || LENGTH(p_texto) || ' chars excede o limite de ' || c_max_texto;
-            log_seguro(-20003, 'TEXTO_EXCEDE_LIMITE: ' || v_msg,
+            v_reg := log_seguro(-20003, 'TEXTO_EXCEDE_LIMITE: ' || v_msg,
                         'len=' || LENGTH(p_texto));
-            DBMS_OUTPUT.PUT_LINE('[' || c_fn || '] TEXTO_EXCEDE_LIMITE -- registrado em LOG_ERRO. Retorna BAIXA.');
+            DBMS_OUTPUT.PUT_LINE('[' || c_fn || '] TEXTO_EXCEDE_LIMITE -- ' || msg_reg(v_reg) || '. Retorna BAIXA.');
             RETURN 'BAIXA';
         WHEN VALUE_ERROR THEN
             v_msg := SQLERRM;
-            log_seguro(-6502, 'VALUE_ERROR: ' || SUBSTR(v_msg, 1, 400), NULL);
-            DBMS_OUTPUT.PUT_LINE('[' || c_fn || '] VALUE_ERROR -- registrado em LOG_ERRO. Retorna BAIXA.');
+            v_reg := log_seguro(-6502, 'VALUE_ERROR: ' || SUBSTR(v_msg, 1, 400), NULL);
+            DBMS_OUTPUT.PUT_LINE('[' || c_fn || '] VALUE_ERROR -- ' || msg_reg(v_reg) || '. Retorna BAIXA.');
             RETURN 'BAIXA';
         WHEN OTHERS THEN
             -- SQLCODE/SQLERRM precisam ser lidos ANTES de qualquer outra chamada.
             v_msg := SQLERRM;
-            log_seguro(SQLCODE, 'OTHERS: ' || SUBSTR(v_msg, 1, 400), NULL);
-            DBMS_OUTPUT.PUT_LINE('[' || c_fn || '] OTHERS -- registrado em LOG_ERRO. Retorna BAIXA.');
+            v_reg := log_seguro(SQLCODE, 'OTHERS: ' || SUBSTR(v_msg, 1, 400), NULL);
+            DBMS_OUTPUT.PUT_LINE('[' || c_fn || '] OTHERS -- ' || msg_reg(v_reg) || '. Retorna BAIXA.');
             RETURN 'BAIXA';
     END fn_calcular_score_urgencia;
 
