@@ -82,3 +82,5 @@ SELECT 'objetos de dados: ' || COUNT(CASE WHEN object_type = 'TABLE' THEN 1 END)
 
 PROMPT
 PROMPT === FIM DO ARQUIVO 2TDSPF_2026_Packages_Remover.sql ===
+
+EXIT

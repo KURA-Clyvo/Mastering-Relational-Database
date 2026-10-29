@@ -53,7 +53,8 @@
 -- #  *** CODIGO DE SAIDA ***: o sqlplus sai com SQLCODE modulo 256 (medido).
 -- #  Codigos proprios deste arquivo: ORA-20900 -> 164 (pre-requisito),
 -- #  ORA-20901 -> 165 (invalido/erro de compilacao), ORA-20902 -> 166 (demo com
--- #  FALHOU). Todo erro cujo codigo e MULTIPLO DE 256 sai com 0 (ex.: ORA-20224,
+-- #  FALHOU), ORA-20903 -> 167 (BLOCO 9: algo depende da FN_COBRANCA_JSON da
+-- #  Sprint 3 que seria removida). Todo erro cujo codigo e MULTIPLO DE 256 sai com 0 (ex.: ORA-20224,
 -- #  e tambem ORA-01536, quota de espaco): por isso este arquivo nao usa codigos
 -- #  assim (-20224, -20480, -20736, -20992 evitados), e quem automatiza deve
 -- #  decidir por EXIT = 0 E nenhum "ORA-" fora da demo E "RESUMO: n OK, 0 FALHOU".
@@ -203,8 +204,10 @@ COMMENT ON COLUMN AUDITORIA_COBRANCA.DS_VALORES_NEW IS 'Snapshot :NEW serializad
 -- #  Package SEM ESTADO (nenhuma variavel de package) e NAO SERIALLY_REUSABLE.
 -- #  Nunca propaga erro DO PROPRIO INSERT: um log que falha nao pode derrubar o
 -- #  chamador. (Isto NAO cobre o package inutilizavel - spec/body invalido
--- #  propaga ORA-04063/06508 na chamada; quem chama via log_seguro, privado de
--- #  PKG_TRIAGEM e PKG_COBRANCA, engole tambem esse caso.)
+-- #  propaga ORA-04063/06508 na chamada direta. PKG_TRIAGEM e PKG_COBRANCA o
+-- #  chamam por SQL dinamico dentro de log_seguro (privado), que engole esse
+-- #  caso SEM depender do PKG_KURA_LOG em tempo de compilacao - ver I-1 no
+-- #  cabecalho do BLOCO 5.)
 -- #############################################################################
 PROMPT
 PROMPT === BLOCO 3: PKG_KURA_LOG ===
@@ -323,10 +326,11 @@ PROMPT === BLOCO 3: PKG_KURA_LOG criado ===
 -- #    5. as variaveis v_baixa (so atribuida, nunca lida) e v_cod foram removidas;
 -- #    6. a chamada de log e feita por log_seguro (privada): se o PKG_KURA_LOG
 -- #       estiver inutilizavel, a funcao ainda devolve 'BAIXA' (ver abaixo).
--- #  Em erro a funcao retorna 'BAIXA' e nao propaga - inclusive com o BODY do
--- #  PKG_KURA_LOG invalido (medido). Com a SPEC do PKG_KURA_LOG invalida
--- #  o BODY do PKG_TRIAGEM tambem fica INVALID e a chamada propaga ORA-06508
--- #  (medido): esse caso nao e tratavel dentro da funcao, quem o pega e o BLOCO 5.
+-- #  Em erro a funcao retorna 'BAIXA' e nao propaga - inclusive com o BODY ou a
+-- #  SPEC do PKG_KURA_LOG invalidos (medido): o log_seguro chama o PKG_KURA_LOG
+-- #  por SQL dinamico (EXECUTE IMMEDIATE), entao o BODY do PKG_TRIAGEM NAO tem
+-- #  dependencia de compilacao dele e nao fica INVALID quando a spec do log
+-- #  quebra (antes da fix wave ficava, e a chamada propagava ORA-06508).
 -- #
 -- #  LGPD: DS_PARAMETROS recebe so 'len=<tamanho>' - nunca o texto do tutor.
 -- #############################################################################
@@ -396,12 +400,13 @@ CREATE OR REPLACE PACKAGE BODY PKG_TRIAGEM AS
     -- Devolve TRUE se a chamada ao PKG_KURA_LOG RETORNOU (o registrar_erro engole
     -- falha do proprio INSERT, entao TRUE nao garante a linha - o que ela garante
     -- e que o package de log nao estava inutilizavel) e FALSE se a chamada
-    -- levantou excecao (spec/body invalido). Quem imprime "registrado" usa o
+    -- levantou excecao (spec/body invalido). Quem imprime "enviado" usa o
     -- retorno (RE-M3 da re-G2: antes a mensagem era incondicional).
     FUNCTION log_seguro (p_codigo IN NUMBER, p_mensagem IN VARCHAR2, p_parametros IN VARCHAR2) RETURN BOOLEAN IS
     BEGIN
         BEGIN
-            PKG_KURA_LOG.registrar_erro(c_fn, p_codigo, p_mensagem, p_parametros);
+            EXECUTE IMMEDIATE 'BEGIN PKG_KURA_LOG.registrar_erro(:1, :2, :3, :4); END;'
+                USING c_fn, p_codigo, p_mensagem, p_parametros;
             RETURN TRUE;
         EXCEPTION
             WHEN OTHERS THEN
@@ -411,7 +416,7 @@ CREATE OR REPLACE PACKAGE BODY PKG_TRIAGEM AS
 
     FUNCTION msg_reg (p_ok IN BOOLEAN) RETURN VARCHAR2 IS
     BEGIN
-        RETURN CASE WHEN p_ok THEN 'registrado em LOG_ERRO' ELSE 'NAO foi possivel registrar em LOG_ERRO (PKG_KURA_LOG inutilizavel)' END;
+        RETURN CASE WHEN p_ok THEN 'enviado ao PKG_KURA_LOG' ELSE 'NAO foi possivel chamar o PKG_KURA_LOG (inutilizavel)' END;
     END msg_reg;
 
     FUNCTION fn_calcular_score_urgencia (p_texto IN VARCHAR2) RETURN VARCHAR2 IS
@@ -515,10 +520,21 @@ PROMPT === BLOCO 4: PKG_TRIAGEM criado ===
 -- #       chamava. Isto e o que torna LEGAL logar dentro da FN_COBRANCA_JSON, que
 -- #       a trigger chama (a S3 NAO podia: COMMIT em trigger e ORA-04092);
 -- #    2. toda gravacao de log passa por log_seguro (privada, bloco aninhado com
--- #       WHEN OTHERS): se o PKG_KURA_LOG estiver inutilizavel, a fn_cobranca_json
--- #       ainda devolve o JSON de fallback e NAO derruba o INSERT em COBRANCA;
+-- #       WHEN OTHERS): se o PKG_KURA_LOG estiver inutilizavel (spec OU body
+-- #       invalido), a fn_cobranca_json ainda devolve o JSON de fallback e NAO
+-- #       derruba o INSERT em COBRANCA. I-1 da G2: com chamada ESTATICA
+-- #       (PKG_KURA_LOG.registrar_erro(...)) o BODY do PKG_COBRANCA depende, em
+-- #       tempo de COMPILACAO, da SPEC do log; spec invalida => body do
+-- #       PKG_COBRANCA invalido => a trigger nao consegue chamar a
+-- #       fn_cobranca_json => ORA-04063 em todo INSERT/UPDATE em COBRANCA (o
+-- #       WHEN OTHERS nao ajuda: o body nem executa). Por isso o log e chamado
+-- #       por EXECUTE IMMEDIATE (resolvido na execucao): o body do PKG_COBRANCA
+-- #       e o do PKG_TRIAGEM nao dependem mais do PKG_KURA_LOG (confira em
+-- #       user_dependencies). CONTINUA sem protecao: PKG_AUDITORIA ausente/
+-- #       invalido e o proprio PKG_COBRANCA invalido derrubam o DML (ver RISCO
+-- #       CONHECIDO no BLOCO 7);
 -- #    3. NM_PROCEDURE em LOG_ERRO passa a ser 'PKG_COBRANCA.<ROTINA>';
--- #    4. a mensagem "registrado em LOG_ERRO" so e impressa se a chamada ao log
+-- #    4. a mensagem "enviado ao PKG_KURA_LOG" so e impressa se a chamada ao log
 -- #       retornou (RE-M3 da re-G2);
 -- #    5. rotinas novas: listar_json, relatorio_json, exportar_todas.
 -- #  Mesmos nomes de campo, mesma ordem, mesmo escape, mesmo ponto decimal e mesma
@@ -654,7 +670,8 @@ CREATE OR REPLACE PACKAGE BODY PKG_COBRANCA AS
                          p_parametros IN VARCHAR2) RETURN BOOLEAN IS
     BEGIN
         BEGIN
-            PKG_KURA_LOG.registrar_erro(c_pkg || p_rotina, p_codigo, p_mensagem, p_parametros);
+            EXECUTE IMMEDIATE 'BEGIN PKG_KURA_LOG.registrar_erro(:1, :2, :3, :4); END;'
+                USING c_pkg || p_rotina, p_codigo, p_mensagem, p_parametros;
             RETURN TRUE;
         EXCEPTION
             WHEN OTHERS THEN
@@ -664,7 +681,7 @@ CREATE OR REPLACE PACKAGE BODY PKG_COBRANCA AS
 
     FUNCTION msg_reg (p_ok IN BOOLEAN) RETURN VARCHAR2 IS
     BEGIN
-        RETURN CASE WHEN p_ok THEN 'registrado em LOG_ERRO.' ELSE 'NAO foi possivel registrar em LOG_ERRO (PKG_KURA_LOG inutilizavel).' END;
+        RETURN CASE WHEN p_ok THEN 'enviado ao PKG_KURA_LOG.' ELSE 'NAO foi possivel chamar o PKG_KURA_LOG (inutilizavel).' END;
     END msg_reg;
 
     -- Acrescenta texto ao CLOB temporario (amount de CLOB e em CARACTERES).
@@ -680,7 +697,9 @@ CREATE OR REPLACE PACKAGE BODY PKG_COBRANCA AS
         DBMS_LOB.CREATETEMPORARY(p_lob, TRUE, DBMS_LOB.SESSION);
     END inicia_lob;
 
-    -- Libera o temporario e zera o OUT (usado so no caminho de erro).
+    -- Libera o CLOB temporario (usado so no caminho de erro). O p_lob := NULL
+    -- vale so para a copia local: como a excecao propaga, o OUT de quem chamou
+    -- NAO e alterado (medido na G2/M8) - o que importa aqui e liberar o LOB.
     PROCEDURE libera_lob (p_lob IN OUT NOCOPY CLOB) IS
     BEGIN
         IF p_lob IS NOT NULL THEN
@@ -1144,7 +1163,8 @@ PROMPT === BLOCO 5: PKG_COBRANCA criado ===
 -- #
 -- #  Falha de auditoria NAO e silenciada (sem WHEN OTHERS): se o INSERT em
 -- #  AUDITORIA_COBRANCA falha, o DML auditado falha. Isso e proposital.
--- #  A protecao contra LOG invalido mora dentro da PKG_COBRANCA (log_seguro).
+-- #  A protecao contra LOG invalido mora dentro da PKG_COBRANCA (log_seguro,
+-- #  chamada dinamica do PKG_KURA_LOG).
 -- #
 -- #  Package SEM ESTADO e NAO SERIALLY_REUSABLE (a trigger o chama).
 -- #############################################################################
@@ -1255,7 +1275,8 @@ PROMPT === BLOCO 6: PKG_AUDITORIA criado ===
 -- #  chamada ao PKG_AUDITORIA; a regra mora no package.
 -- #
 -- #  Sem bloco EXCEPTION, como na Sprint 3: falha de auditoria nao pode ser
--- #  silenciada. O package de LOG invalido nao derruba o DML (log_seguro).
+-- #  silenciada. O package de LOG invalido (spec ou body) nao derruba o DML:
+-- #  o log_seguro o chama por SQL dinamico (I-1 da G2; ver BLOCO 5).
 -- #
 -- #  RISCO CONHECIDO (documentado de proposito): se o PKG_AUDITORIA (ou o
 -- #  PKG_COBRANCA) for REMOVIDO ou ficar INVALID e nao recompilar, todo DML em
@@ -2185,7 +2206,9 @@ END;
 /
 PROMPT ###################  DEMO S4-DB-03: FIM  ###################
 
--- BLOCO 8 de novo: as demonstracoes nao deixaram nada invalido.
+-- BLOCO 8 de novo: as demonstracoes nao deixaram nada invalido. (Copia literal do
+-- BLOCO 8 de cima, de proposito: o script e SQL*Plus puro, sem include; mover o
+-- bloco para um procedimento criaria um objeto a mais no schema so para isto.)
 PROMPT
 PROMPT === BLOCO 8: verificacao (recompila e confere objetos e DEPENDENTES) ===
 -- Recompila os objetos deste arquivo e TODOS os que dependem deles (direta ou
@@ -2312,3 +2335,5 @@ END;
 /
 PROMPT
 PROMPT === FIM DO ARQUIVO 2TDSPF_2026_Packages_Integrantes.sql ===
+
+EXIT
