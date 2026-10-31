@@ -758,7 +758,7 @@ A infraestrutura Oracle da entrega da Sprint 3 é provida pela FIAP (parceria FI
 
 Vídeo demonstrativo narrado (rubrica da Sprint 4, item 5): execução dos procedimentos pelo backend, inserção no banco relacional, exportação do dataset para JSON e importação no MongoDB.
 
-> **Link: PENDENTE.** O vídeo ainda não foi gravado nem publicado. Substituir esta linha pelo link quando existir.
+> **Link:** https://youtu.be/9xN_T6FrOIU
 
 ---
 
