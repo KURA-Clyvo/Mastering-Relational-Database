@@ -11,7 +11,7 @@ KURA é um sistema de gestão de continuidade veterinária desenvolvido para a *
 
 ### Sobre o arquivo de entrega
 
-O schema real do KURA é mantido por **19 migrations Flyway** no repositório `backend-tutor-java`. O arquivo **`src/2TDSPF_2026_CodigoSql_Integrantes.sql`** é a **consolidação dessas 19 migrations num único script executável**: cada tabela já nasce no estado final (estado da migration **V19**), com todas as ~75 alterações posteriores (`ALTER TABLE`) já aplicadas inline — **mais** os objetos PL/SQL e a tabela de auditoria exigidos pela Sprint 3.
+Na entrega da Sprint 3, o schema real do KURA era mantido por **19 migrations Flyway** (V1 a V19) no repositório `backend-tutor-java` — hoje são 22; ver a nota [Sobre a contagem de migrations](#sprint-4-em-uma-página). O arquivo **`src/2TDSPF_2026_CodigoSql_Integrantes.sql`** é a **consolidação dessas 19 migrations num único script executável**: cada tabela já nasce no estado final (estado da migration **V19**), com todas as ~75 alterações posteriores (`ALTER TABLE`) já aplicadas inline — **mais** os objetos PL/SQL e a tabela de auditoria exigidos pela Sprint 3.
 
 O script é **re-executável**: o BLOCO 1 (limpeza idempotente) derruba, **por nome**, apenas os objetos do KURA — nunca um `DROP` genérico —, porque o schema de aluno da FIAP é **compartilhado entre várias disciplinas**. Nenhuma credencial, host ou connection string aparece no arquivo; toda a carga do BLOCO 7 é fictícia e declarada como tal.
 
@@ -26,9 +26,9 @@ A Sprint 4 **soma** quatro coisas à entrega da Sprint 3, sem alterá-la:
 
 O arquivo da Sprint 3 (`src/2TDSPF_2026_CodigoSql_Integrantes.sql`), o PDF e os modelos lógico e relacional **continuam exatamente como foram entregues**; as seções da Sprint 3 abaixo ficam como histórico.
 
-> **Onde a Sprint 4 foi provada.** Em um **Oracle XE 21c local (Docker)**, com o schema do produto criado pelo Flyway, e com a API .NET rodando em container contra ele. **Não** foi provada no Oracle do Azure: a instalação dos packages lá ainda não foi executada. Detalhes e limites na seção [Arquitetura de execução](#arquitetura-de-execução).
+> **Onde a Sprint 4 foi provada.** Em um **Oracle XE 21c local (Docker)**, com o schema do produto criado pelo Flyway, e com a API .NET rodando em container contra ele: a integração ponta a ponta (API, Oracle e MongoDB) foi validada **nesse ambiente local**. No **Oracle da VM do Azure**, em 31/10/2026, foi executado `bash azure/deploy.sh db-packages` (repositório `DevOps-Cloud`), que confirmou a **instalação e compilação dos nove objetos** (4 packages com spec e body + a trigger `TRG_AUDITORIA_COBRANCA`, todos `VALID`); **não** houve teste ponta a ponta no Azure. Detalhes e limites na seção [Arquitetura de execução](#arquitetura-de-execução).
 
-> **Sobre a contagem de migrations.** O texto da Sprint 3 abaixo fala em 19 migrations (estado V19). O produto hoje aplica **22 migrations (V1 a V23, sem a V20)**. As migrations V20 a V23 não tocam `COBRANCA`, `SERVICO_PRECO` nem `LOG_ERRO` (busca por esses nomes nos cinco arquivos: 0 ocorrências nas migrations; o mesmo comando acha 1 em um teste, usado como controle positivo), então o recorte da Sprint 3 segue compatível com o banco do produto.
+> **Sobre a contagem de migrations.** O texto da Sprint 3 abaixo fala em 19 migrations (estado V19): esse era o estado do produto **na entrega da Sprint 3**. O produto hoje (Sprint 4) aplica **22 migrations (V1 a V23, sem a V20)**. As migrations V20 a V23 não tocam `COBRANCA`, `SERVICO_PRECO` nem `LOG_ERRO` (busca por esses nomes nos cinco arquivos: 0 ocorrências nas migrations; o mesmo comando acha 1 em um teste, usado como controle positivo), então o recorte da Sprint 3 segue compatível com o banco do produto.
 
 ---
 
@@ -113,7 +113,7 @@ Static Web Apps (clínica · tutor) ──HTTPS──► App Service
                                              ├─ API do tutor (Java, Flyway)
                                              └─ Luna (Python)            │
                                                                          ▼
-                            VM privada ── Oracle XE 21c, schema KURA  ◄── onde os packages devem morar
+                            VM privada ── Oracle XE 21c, schema KURA  ◄── onde os packages estão instalados
                                        └─ MongoDB 7 (base do produto, kura_docs)
 ```
 
@@ -132,7 +132,7 @@ Consequências para esta entrega:
 | A API .NET chama `listar_json` e `relatorio_json`, escopadas pela clínica do JWT, com duas clínicas | Oracle XE 21c local; API construída de `backend-clinica-dotnet@7167076` em container |
 | JSON do package = arquivo versionado = entrada do `mongoimport`; `countDocuments` = `COUNT(*)`; agregação = relatório da Sprint 3 | Oracle XE 21c local e `mongo:7` local |
 | Suíte automatizada da .NET (1435 testes, 0 falhas em `7167076`) | **InMemory: não executa PL/SQL.** Não é prova de Oracle |
-| Instalação dos packages no Oracle da VM do Azure | **Não executada** |
+| Instalação dos packages no Oracle da VM do Azure: os nove objetos (`PKG_AUDITORIA`, `PKG_COBRANCA`, `PKG_KURA_LOG`, `PKG_TRIAGEM` — PACKAGE e PACKAGE BODY — e `TRG_AUDITORIA_COBRANCA`) compilam e ficam `VALID` | Oracle XE 21c da VM do Azure, em 31/10/2026, via `bash azure/deploy.sh db-packages` (repositório `DevOps-Cloud`): `EXIT_SQLPLUS=0`, `ORA_FORA_DEMO=0`, `INVALIDOS=0`, `PACKAGES_VALIDOS=9`, `S3_RESTANTES=0`, `RESUMOS_OK=2`, `RESUMOS_FALHOU=0`, sentinel `KURA_DB_PACKAGES_OK`; consulta posterior ao dicionário confirmou os nove objetos `VALID`. **Só instalação e compilação: não houve teste ponta a ponta (API ↔ Oracle ↔ MongoDB) no Azure** |
 | Vídeo demonstrativo | Ver [Vídeo da Sprint 4](#vídeo-da-sprint-4) |
 
 ---
