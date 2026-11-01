@@ -7,7 +7,7 @@
 -- #  INTEGRANTES (ordem alfabetica pelo primeiro nome):
 -- #    - Clayton Alves dos Santos................... RM562285
 -- #    - Felipe Ferrete Soares Lemes ............... RM562999
--- #    - Guilherme Sola Guarcia..................... RM563674
+-- #    - Guilherme Sola Garcia...................... RM563674
 -- #    - Gustavo Bosak Santos....................... RM566315
 -- #    - Nikolas Henrique de Souza Lemes Brisola ... RM564371
 -- #
